@@ -1,0 +1,10 @@
+[server]
+wg_interface        = wg0
+wg_listen_port      = 51820
+wg_public_key       = REPLACE_WITH_SERVER_PUBKEY
+internal_subnet     = 10.10.10.0/24
+idp_url             = http://idp:8080
+oauth_client_id     = srvauthn
+oauth_client_secret = change-me-too
+tls_cert            = /certs/srv.crt
+tls_key             = /certs/srv.key

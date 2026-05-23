@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Authentication Successful{% endblock %}
+{% block content %}
+<h1>✅ Authentication Complete</h1>
+<p class="sub">Welcome, <strong>{{ username }}</strong></p>
+<div class="ok">
+  Your identity has been verified. You can close this browser tab —
+  your VPN configuration is being applied automatically.
+</div>
+{% endblock %}

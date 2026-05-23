@@ -1,0 +1,1 @@
+# SrvAuthn uses only stdlib + db module (no extra deps)

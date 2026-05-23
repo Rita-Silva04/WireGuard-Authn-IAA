@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}VPN Login — Verify Identity{% endblock %}
+{% block head %}
+<script src="/static/js/webauthn.js" defer></script>
+{% endblock %}
+{% block content %}
+<h1>🔐 Verify Your Identity</h1>
+<p class="sub">Logged in as <strong>{{ username }}</strong></p>
+
+<!-- Progress indicators -->
+<div class="steps">
+  {% for f in required %}
+    {% if f == 'password' %}
+      <div class="step {% if password_ok %}done{% elif factor == 'password' %}active{% endif %}"
+           title="Password"></div>
+    {% elif f == 'totp' %}
+      <div class="step {% if totp_ok %}done{% elif factor == 'totp' %}active{% endif %}"
+           title="TOTP"></div>
+    {% elif f == 'fido2' %}
+      <div class="step {% if fido2_ok %}done{% elif factor == 'fido2' %}active{% endif %}"
+           title="FIDO2"></div>
+    {% endif %}
+  {% endfor %}
+</div>
+
+{% if error %}
+<div class="err">{{ error }}</div>
+{% endif %}
+
+<!-- ── Password factor ── -->
+{% if factor == 'password' %}
+<p class="info">Step: Enter your password</p>
+<form method="POST" action="/oauth/mfa/{{ session_id }}/password">
+  <label>Password</label>
+  <input type="password" name="password" autofocus autocomplete="current-password">
+  <button class="btn btn-primary" type="submit">Verify Password →</button>
+</form>
+
+<!-- ── TOTP factor ── -->
+{% elif factor == 'totp' %}
+<p class="info">Step: Enter the 6-digit code from your authenticator app</p>
+<form method="POST" action="/oauth/mfa/{{ session_id }}/totp">
+  <label>Authenticator Code</label>
+  <input type="text" name="code" placeholder="123456" maxlength="6"
+         inputmode="numeric" autocomplete="one-time-code" autofocus
+         style="text-align:center;font-size:1.5rem;letter-spacing:.2em">
+  <button class="btn btn-primary" type="submit">Verify Code →</button>
+</form>
+
+<!-- ── FIDO2 factor ── -->
+{% elif factor == 'fido2' %}
+<p class="info">Step: Touch your YubiKey / security key</p>
+<button class="btn btn-primary" id="fido2-btn"
+        onclick="startFido2('{{ session_id }}')">
+  🔑 Touch YubiKey
+</button>
+<div id="fido2-msg"></div>
+{% endif %}
+
+{% endblock %}

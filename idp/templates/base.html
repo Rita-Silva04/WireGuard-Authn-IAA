@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}VPN Auth{% endblock %}</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Arial,sans-serif;background:#111;color:#eee;
+     min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+.card{background:#1e1e1e;border:1px solid #333;border-radius:12px;
+      padding:32px;width:100%;max-width:440px}
+h1{font-size:1.4rem;margin-bottom:6px}
+.sub{color:#888;font-size:.88rem;margin-bottom:24px}
+label{display:block;font-size:.85rem;color:#aaa;margin-bottom:4px;margin-top:14px}
+input[type=text],input[type=password]{width:100%;padding:10px 14px;
+  background:#2a2a2a;border:1px solid #444;border-radius:8px;color:#fff;font-size:1rem}
+input:focus{outline:2px solid #4f8ef7;border-color:transparent}
+.btn{display:block;width:100%;padding:11px;border:none;border-radius:8px;
+     font-size:.95rem;cursor:pointer;margin-top:14px;font-weight:600;transition:opacity .15s}
+.btn:hover{opacity:.88}
+.btn-primary{background:#4f8ef7;color:#fff}
+.btn-secondary{background:#2a2a2a;color:#ccc;border:1px solid #444}
+.btn-success{background:#27ae60;color:#fff}
+.err{background:#3d1a1a;color:#eb5757;padding:10px 14px;border-radius:8px;
+     font-size:.88rem;margin-top:14px}
+.ok{background:#1a3d2b;color:#6fcf97;padding:10px 14px;border-radius:8px;
+    font-size:.88rem;margin-top:14px}
+.info{background:#1a3a5c;color:#7ec8f5;padding:10px 14px;border-radius:8px;
+      font-size:.88rem;margin-top:14px}
+.divider{border:none;border-top:1px solid #333;margin:20px 0}
+.steps{display:flex;gap:8px;margin-bottom:20px}
+.step{flex:1;height:6px;border-radius:3px;background:#333}
+.step.done{background:#27ae60}
+.step.active{background:#4f8ef7}
+</style>
+{% block head %}{% endblock %}
+</head>
+<body>
+<div class="card">
+{% block content %}{% endblock %}
+</div>
+{% block scripts %}{% endblock %}
+</body>
+</html>

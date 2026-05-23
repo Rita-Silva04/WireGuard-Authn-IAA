@@ -1,0 +1,4 @@
+#%PAM-1.0
+# /etc/pam.d/vpnauth
+auth    required    pam_vpnmfa.so   idp_url=http://localhost:8080
+account required    pam_permit.so

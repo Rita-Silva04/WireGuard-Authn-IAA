@@ -1,0 +1,11 @@
+[server]
+# WireGuard server public key — this IS the trust anchor
+public_key  = REPLACE_WITH_SERVER_PUBKEY
+# Server IP or hostname
+address     = YOUR_SERVER_IP
+# WireGuard UDP port
+port        = 51820
+# SrvAuthn TLS port
+auth_port   = 9999
+# Path to server TLS certificate (for pinning)
+tls_cert    = /path/to/srv.crt

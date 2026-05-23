@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Helpdesk — {{ user.username }}{% endblock %}
+{% block head %}
+<script src="/static/js/webauthn.js" defer></script>
+{% endblock %}
+{% block content %}
+<h1>👤 {{ user.display_name }}</h1>
+<p class="sub">{{ user.username }} · created {{ user.created_at[:10] }}</p>
+
+{% if error %}<div class="err">{{ error }}</div>{% endif %}
+
+<!-- ── Password ── -->
+<div class="card">
+  <h2>Password
+    {% if has_password %}<span class="badge badge-ok">SET</span>
+    {% else %}<span class="badge badge-no">NOT SET</span>{% endif %}
+  </h2>
+  <form method="POST" action="/user/{{ user.username }}/password">
+    <div class="row">
+      <div style="flex:1"><label>New Password (min 8 chars)</label>
+        <input type="password" name="password" autocomplete="new-password"></div>
+      <button class="btn btn-primary" type="submit">Set Password</button>
+    </div>
+  </form>
+</div>
+
+<!-- ── TOTP ── -->
+<div class="card">
+  <h2>TOTP (Authenticator App)
+    {% if totp %}
+      {% if totp.confirmed %}<span class="badge badge-ok">CONFIRMED</span>
+      {% else %}<span class="badge badge-warn">PENDING CONFIRM</span>{% endif %}
+    {% else %}<span class="badge badge-no">NOT SET</span>{% endif %}
+  </h2>
+
+  <form method="POST" action="/user/{{ user.username }}/totp" style="display:inline">
+    <button class="btn btn-secondary btn-sm" type="submit">
+      {% if totp %}Regenerate Secret{% else %}Generate Secret{% endif %}
+    </button>
+  </form>
+
+  {% if totp %}
+  <div style="margin-top:16px;display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap">
+    <img src="/user/{{ user.username }}/totp/qr" style="width:160px;border-radius:8px"
+         alt="TOTP QR Code">
+    <div>
+      <p style="font-size:.85rem;color:#888">Scan with Google Authenticator, Authy, etc.</p>
+      <p style="font-size:.8rem;color:#555;margin-top:8px">Secret: <code style="color:#aaa">{{ totp.secret }}</code></p>
+      {% if not totp.confirmed %}
+      <form method="POST" action="/user/{{ user.username }}/totp/confirm" style="margin-top:12px">
+        <label>Enter code to confirm</label>
+        <div class="row">
+          <input type="text" name="code" placeholder="123456" maxlength="6"
+                 style="width:120px;text-align:center;font-size:1.1rem;letter-spacing:.15em">
+          <button class="btn btn-primary btn-sm" type="submit">Confirm</button>
+        </div>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+<!-- ── FIDO2 ── -->
+<div class="card">
+  <h2>FIDO2 / Security Keys
+    {% if fido2_creds %}<span class="badge badge-ok">{{ fido2_creds|length }} KEY(S)</span>
+    {% else %}<span class="badge badge-no">NONE</span>{% endif %}
+  </h2>
+
+  {% if fido2_creds %}
+  <table>
+    <tr><th>Name</th><th>Registered</th><th></th></tr>
+    {% for c in fido2_creds %}
+    <tr>
+      <td>{{ c.name }}</td>
+      <td style="color:#555;font-size:.82rem">{{ c.created_at[:10] }}</td>
+      <td>
+        <form method="POST" action="/user/{{ user.username }}/fido2/{{ c.cred_id }}/delete">
+          <button class="btn btn-danger btn-sm" type="submit"
+                  onclick="return confirm('Remove this key?')">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  <div style="margin-top:14px">
+    <label>Key Name</label>
+    <div class="row">
+      <input type="text" id="key-name" placeholder="YubiKey 5" style="max-width:200px">
+      <button class="btn btn-primary btn-sm"
+              onclick="registerKey('{{ user.username }}')">Register Security Key</button>
+    </div>
+    <div id="msg"></div>
+  </div>
+</div>
+
+{% endblock %}
