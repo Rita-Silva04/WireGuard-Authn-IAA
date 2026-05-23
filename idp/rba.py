@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-import db.database as database
+from common import db as database
 
 
 FACTOR_PASSWORD = "password"

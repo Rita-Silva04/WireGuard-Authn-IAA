@@ -53,7 +53,7 @@ logging.basicConfig(
 log = logging.getLogger("srvauthn")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-import db.database as database
+from common import db as database
 
 DEFAULT_PORT     = 9999
 POLL_INTERVAL    = 5    # seconds between IdP token polls

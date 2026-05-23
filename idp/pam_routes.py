@@ -14,7 +14,7 @@ import pyotp
 from flask import Blueprint, jsonify, request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-import db.database as database
+from common import db as database
 
 pam_bp = Blueprint("pam", __name__, url_prefix="/pam")
 

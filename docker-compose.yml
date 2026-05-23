@@ -1,29 +1,17 @@
-services:
+# Phase 0 baseline stack:
+#   - idp        : Flask IdP + OAuth 2.0 Device Grant + MFA web routes
+#   - helpdesk   : Flask enrolment UI
+#   - srvauthn   : TLS auth server (port 9999) + WireGuard host (wg0)
+#
+# wg0 lives inside the srvauthn container, which runs with `network_mode: host`
+# so the interface appears on the host's network namespace (no separate WG
+# container is needed). For this to work, the host kernel must have the
+# wireguard module (built-in on Linux kernel >= 5.6).
+#
+# The nginx reverse-proxy from the original colleague design has been removed
+# - browsers hit IdP directly on :8080 and helpdesk on :8081.
 
-  # ── WireGuard VPN ──────────────────────────────────────────────────────────
-  wireguard:
-    image: linuxserver/wireguard
-    container_name: wireguard
-    cap_add:
-      - NET_ADMIN
-      - SYS_MODULE
-    environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=Europe/Lisbon
-      - SERVERURL=${SERVER_URL}
-      - SERVERPORT=51820
-      - PEERS=0
-      - PEERDNS=1.1.1.1
-      - INTERNAL_SUBNET=10.10.10.0
-    volumes:
-      - ./wireguard:/config
-      - /lib/modules:/lib/modules
-    ports:
-      - "51820:51820/udp"
-    sysctls:
-      - net.ipv4.conf.all.src_valid_mark=1
-    restart: unless-stopped
+services:
 
   # ── OAuth 2.0 IdP + MFA ────────────────────────────────────────────────────
   idp:
@@ -35,45 +23,22 @@ services:
       - SECRET_KEY=${SECRET_KEY}
       - DB_PATH=/data/vpnauth.db
       - RP_ID=${RP_ID:-localhost}
-      - ORIGIN=${ORIGIN:-http://localhost}
+      - ORIGIN=${ORIGIN:-http://localhost:8080}
       - OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET:-srvauthn-secret}
       - IDP_PORT=8080
     volumes:
       - ./data:/data
       - ./idp:/app/idp
-      - ./db:/app/db
-      - ./rba:/app/rba
+      - ./common:/app/common
     ports:
       - "8080:8080"
     restart: unless-stopped
 
-  # ── SrvAuthn TLS auth server ───────────────────────────────────────────────
-  srvauthn:
-    build:
-      context: .
-      dockerfile: srvauthn/Dockerfile
-    container_name: vpn-srvauthn
-    environment:
-      - DB_PATH=/data/vpnauth.db
-    volumes:
-      - ./data:/data
-      - ./certs:/certs
-      - ./wireguard:/etc/wireguard
-      - ./srvauthn:/app/srvauthn
-      - ./db:/app/db
-    network_mode: host          # needs access to wg0 interface
-    cap_add:
-      - NET_ADMIN
-    depends_on:
-      - idp
-      - wireguard
-    restart: unless-stopped
-
-  # ── Helpdesk UI ────────────────────────────────────────────────────────────
+  # ── Helpdesk (internal enrolment UI) ───────────────────────────────────────
   helpdesk:
     build:
       context: .
-      dockerfile: helpdesk/Dockerfile
+      dockerfile: idp/helpdesk/Dockerfile
     container_name: vpn-helpdesk
     environment:
       - SECRET_KEY=${SECRET_KEY}
@@ -83,26 +48,33 @@ services:
       - HELPDESK_PORT=8081
     volumes:
       - ./data:/data
-      - ./helpdesk:/app/helpdesk
-      - ./db:/app/db
+      - ./idp/helpdesk:/app/helpdesk
+      - ./common:/app/common
     ports:
-      - "8081:8081"
+      - "8081:8081"          # Phase 1 step 1.7 binds this to 127.0.0.1 only.
     depends_on:
       - idp
     restart: unless-stopped
 
-  # ── Nginx reverse proxy ────────────────────────────────────────────────────
-  nginx:
-    image: nginx:latest
-    container_name: nginx
-    ports:
-      - "80:80"
+  # ── SrvAuthn (+ wg0) ───────────────────────────────────────────────────────
+  srvauthn:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: vpn-srvauthn
+    environment:
+      - DB_PATH=/data/vpnauth.db
+      - OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET:-srvauthn-secret}
     volumes:
-      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
-    entrypoint: >
-      /bin/sh -c "rm -f /etc/nginx/sites-enabled/default &&
-                  nginx -g 'daemon off;'"
+      - ./data:/data
+      - ./certs:/certs
+      - ./wireguard:/etc/wireguard
+      - ./server:/app/server
+      - ./common:/app/common
+    network_mode: host          # wg0 sits on the host's network namespace
+    cap_add:
+      - NET_ADMIN               # required for `wg-quick up`
+      - SYS_MODULE              # required to load the wireguard kernel module
     depends_on:
       - idp
-      - helpdesk
     restart: unless-stopped

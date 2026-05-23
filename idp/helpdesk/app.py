@@ -38,7 +38,7 @@ from webauthn.helpers.structs import (
 )
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-import db.database as database
+from common import db as database
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "helpdesk-secret")

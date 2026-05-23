@@ -182,6 +182,9 @@ def main():
         sys.exit(1)
 
     log.info("TLS connection established")
+    # The 30 s timeout was only for the initial connect.
+    # The auth poll can take up to POLL_TIMEOUT seconds on the server side.
+    sock.settimeout(660)
 
     try:
         # ── Step 3: Send hello ────────────────────────────────────────────────

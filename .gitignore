@@ -1,0 +1,29 @@
+# Runtime / per-deployment state — keep out of git
+data/
+wireguard/
+certs/
+
+# Local environment files
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+
+# Captures / logs
+*.pcap
+*.log
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Internal working notes (move to `internal/` before final submission)
+# Leaving these tracked for now since the team is iterating on them.

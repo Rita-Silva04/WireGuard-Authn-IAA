@@ -34,8 +34,8 @@ from webauthn import (
 from webauthn.helpers.structs import UserVerificationRequirement
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-import db.database as database
-from rba.engine import compute_risk, risk_label
+from common import db as database
+from idp.rba import compute_risk, risk_label
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "idp-secret-change-me")

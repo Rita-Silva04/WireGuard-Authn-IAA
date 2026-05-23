@@ -1,11 +1,17 @@
 FROM python:3.12-slim
 WORKDIR /app
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    wireguard-tools iproute2 iptables \
+    wireguard-tools iproute2 iptables procps \
     && rm -rf /var/lib/apt/lists/*
-COPY srvauthn/requirements.txt .
+
+COPY server/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY srvauthn/ ./srvauthn/
-COPY db/ ./db/
+
+COPY server/ ./server/
+COPY common/ ./common/
+
+RUN chmod +x /app/server/entrypoint.sh
 ENV PYTHONPATH=/app
-CMD ["python", "-m", "srvauthn.srvauthn", "--config", "/app/srvauthn/srvauthn.conf"]
+
+ENTRYPOINT ["/app/server/entrypoint.sh"]
