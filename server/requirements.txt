@@ -1,1 +1,3 @@
-# SrvAuthn uses only stdlib + db module (no extra deps)
+# SrvAuthn — Phase 3 adds the Noise-IK tunnel, which needs the same
+# primitives the IdP uses (x25519, ChaCha20Poly1305, BLAKE2s via HMAC).
+cryptography

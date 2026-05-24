@@ -11,5 +11,7 @@ internal_subnet     = 10.10.10.0/24
 idp_url             = http://localhost:8080
 oauth_client_id     = srvauthn
 oauth_client_secret = REPLACE_OR_THE_APP_WILL_REFUSE_TO_START
-tls_cert            = /certs/srv.crt
-tls_key             = /certs/srv.key
+# The Phase 3 Noise-IK tunnel uses the server's WG private key directly;
+# no TLS certificate is needed any more (§3.9).
+# Optional override for the proxy egress target (default localhost:8080).
+# proxy_target      = localhost:8080

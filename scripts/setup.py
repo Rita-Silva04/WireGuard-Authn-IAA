@@ -6,13 +6,12 @@ Usage:
     python3 scripts/setup.py [--user alice] [--password TestPass123] [--force]
 
 What it does (idempotent — safe to re-run):
-  1. Check prerequisites (docker, wg, openssl)
+  1. Check prerequisites (docker, wg)
   2. Generate .env with real secrets
   3. Generate the WireGuard server keypair
-  4. Generate the TLS certificate
-  5. Generate server/srvauthn.conf
-  6. Build and start the Docker stack
-  7. Enrol a test user (default: alice) with password + TOTP
+  4. Generate server/srvauthn.conf
+  5. Build and start the Docker stack
+  6. Enrol a test user (default: alice) with password + TOTP
 
 After this script succeeds, run:
     python3 scripts/test_e2e.py
@@ -75,7 +74,7 @@ def container_python(code):
 def check_prerequisites():
     step(1, "Check prerequisites")
     missing = []
-    for tool in ("docker", "wg", "openssl"):
+    for tool in ("docker", "wg"):
         if not shutil.which(tool):
             missing.append(tool)
         else:
@@ -150,27 +149,8 @@ def generate_wg_keys(force):
     return pubkey
 
 
-def generate_tls_cert(force):
-    step(4, "TLS certificate")
-
-    if exists("certs", "srv.crt") and not force:
-        ok("TLS cert already exists — skipping")
-        ok("(test_e2e.py will regenerate it with the VM IP SAN automatically)")
-        return
-
-    r = shell("bash scripts/init-certs.sh localhost", check=False)
-    if r.returncode != 0:
-        if "already exists" in r.stdout:
-            ok("TLS cert already exists — skipping")
-            return
-        fail(f"init-certs.sh failed:\n{r.stdout}\n{r.stderr}")
-
-    ok("TLS cert generated (CN=localhost)")
-    ok("(test_e2e.py will regenerate with the correct VM IP SAN when needed)")
-
-
 def generate_srvauthn_conf(pubkey, force):
-    step(5, "SrvAuthn config (server/srvauthn.conf)")
+    step(4, "SrvAuthn config (server/srvauthn.conf)")
 
     if exists("server", "srvauthn.conf") and not force:
         ok("srvauthn.conf already exists — skipping")
@@ -191,7 +171,7 @@ def generate_srvauthn_conf(pubkey, force):
 
 
 def start_stack(force):
-    step(6, "Build and start Docker stack")
+    step(5, "Build and start Docker stack")
 
     # Check if all three containers are already running
     r = shell("docker compose ps -q --status running 2>/dev/null | wc -l", check=False)
@@ -223,7 +203,7 @@ def start_stack(force):
 
     ok("vpn-idp      ready on :8080")
     ok("vpn-helpdesk ready on :8081")
-    ok("vpn-srvauthn ready on :9999 (TLS)")
+    ok("vpn-srvauthn ready on :9999 (Noise-IK)")
 
     # Verify wg0
     r = subprocess.run(
@@ -237,7 +217,7 @@ def start_stack(force):
 
 
 def enrol_user(username, password, force):
-    step(7, f"Enrol test user '{username}'")
+    step(6, f"Enrol test user '{username}'")
 
     base = "http://localhost:8081"
 
@@ -346,7 +326,6 @@ def main():
     check_prerequisites()
     generate_env(args.force)
     pubkey = generate_wg_keys(args.force)
-    generate_tls_cert(args.force)
     generate_srvauthn_conf(pubkey, args.force)
     start_stack(args.force)
     enrol_user(args.username if hasattr(args, "username") else args.user,
@@ -359,7 +338,7 @@ def main():
   Services:
     IdP       →  http://localhost:8080
     Helpdesk  →  http://localhost:8081
-    SrvAuthn  →  port 9999 (TLS)
+    SrvAuthn  →  port 9999 (Noise-IK)
     WireGuard →  UDP 51820
 
   Test user:  {args.user}  /  {args.password}

@@ -1,7 +1,7 @@
 # Phase 0 baseline stack:
 #   - idp        : Flask IdP + OAuth 2.0 Device Grant + MFA web routes
 #   - helpdesk   : Flask enrolment UI
-#   - srvauthn   : TLS auth server (port 9999) + WireGuard host (wg0)
+#   - srvauthn   : Noise-IK auth server (port 9999) + WireGuard host (wg0)
 #
 # wg0 lives inside the srvauthn container, which runs with `network_mode: host`
 # so the interface appears on the host's network namespace (no separate WG
@@ -72,7 +72,6 @@ services:
       - OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET}
     volumes:
       - ./data:/data
-      - ./certs:/certs
       - ./wireguard:/etc/wireguard
       - ./server:/app/server
       - ./common:/app/common
