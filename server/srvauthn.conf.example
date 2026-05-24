@@ -3,10 +3,13 @@ wg_interface        = wg0
 wg_listen_port      = 51820
 # Paste the value from scripts/init-wg.sh (cat wireguard/publickey-server).
 wg_public_key       = REPLACE_WITH_SERVER_PUBKEY
+# Path to the server's WireGuard *private* key (spec §2, parameter 1).
+# SrvAuthn reads this at startup and logs its fingerprint.
+wg_private_key_file = /etc/wireguard/privatekey-server
 internal_subnet     = 10.10.10.0/24
 # SrvAuthn runs with network_mode=host, so the IdP is reachable on the host loopback.
 idp_url             = http://localhost:8080
 oauth_client_id     = srvauthn
-oauth_client_secret = change-me-too
+oauth_client_secret = REPLACE_OR_THE_APP_WILL_REFUSE_TO_START
 tls_cert            = /certs/srv.crt
 tls_key             = /certs/srv.key

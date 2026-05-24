@@ -15,7 +15,7 @@ What it does (idempotent — safe to re-run):
   7. Enrol a test user (default: alice) with password + TOTP
 
 After this script succeeds, run:
-    python3 scripts/test_phase0.py
+    python3 scripts/test_e2e.py
 """
 
 import argparse
@@ -155,7 +155,7 @@ def generate_tls_cert(force):
 
     if exists("certs", "srv.crt") and not force:
         ok("TLS cert already exists — skipping")
-        ok("(test_phase0.py will regenerate it with the VM IP SAN automatically)")
+        ok("(test_e2e.py will regenerate it with the VM IP SAN automatically)")
         return
 
     r = shell("bash scripts/init-certs.sh localhost", check=False)
@@ -166,7 +166,7 @@ def generate_tls_cert(force):
         fail(f"init-certs.sh failed:\n{r.stdout}\n{r.stderr}")
 
     ok("TLS cert generated (CN=localhost)")
-    ok("(test_phase0.py will regenerate with the correct VM IP SAN when needed)")
+    ok("(test_e2e.py will regenerate with the correct VM IP SAN when needed)")
 
 
 def generate_srvauthn_conf(pubkey, force):
@@ -365,7 +365,7 @@ def main():
   Test user:  {args.user}  /  {args.password}
 
   Next step — run the full end-to-end test:
-    python3 scripts/test_phase0.py
+    python3 scripts/test_e2e.py
 """)
 
 

@@ -2,6 +2,10 @@
 {% block title %}VPN Login — Verify Identity{% endblock %}
 {% block head %}
 <script src="/static/js/webauthn.js" defer></script>
+{% if factor == 'password' %}
+<script src="/static/js/scrypt.js" defer></script>
+<script src="/static/js/password_cr.js" defer></script>
+{% endif %}
 {% endblock %}
 {% block content %}
 <h1>🔐 Verify Your Identity</h1>
@@ -27,13 +31,20 @@
 <div class="err">{{ error }}</div>
 {% endif %}
 
-<!-- ── Password factor ── -->
+<!-- ── Password factor (challenge-response, §1.6) ── -->
 {% if factor == 'password' %}
 <p class="info">Step: Enter your password</p>
-<form method="POST" action="/oauth/mfa/{{ session_id }}/password">
+<form id="pw-form" method="POST"
+      action="/oauth/mfa/{{ session_id }}/password"
+      data-session-id="{{ session_id }}">
   <label>Password</label>
-  <input type="password" name="password" autofocus autocomplete="current-password">
+  <input type="password" name="password" autofocus autocomplete="current-password" required>
   <button class="btn btn-primary" type="submit">Verify Password →</button>
+  <div id="pw-status" class="info" style="margin-top:.6rem"></div>
+  <p class="info" style="font-size:.8rem;color:#888;margin-top:1rem">
+    Your password is stretched with scrypt in the browser and only an
+    HMAC proof is sent to the server.
+  </p>
 </form>
 
 <!-- ── TOTP factor ── -->

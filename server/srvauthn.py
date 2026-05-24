@@ -5,37 +5,30 @@ SrvAuthn — Server-side Authentication Application
 Usage:
     srvauthn.py --interface wg0 --config srvauthn.conf [--port 9999]
 
-Config file (srvauthn.conf):
-    [server]
-    wg_interface    = wg0
-    wg_listen_port  = 51820
-    wg_private_key  = <base64>
-    wg_public_key   = <base64>
-    internal_subnet = 10.10.10.0/24
-    idp_url         = http://localhost:8080
-    oauth_client_id = srvauthn
-    oauth_client_secret = srvauthn-secret
-    tls_cert        = /certs/srv.crt
-    tls_key         = /certs/srv.key
+Config file (srvauthn.conf) — see srvauthn.conf.example.
 
 SrvAuthn listens on a TLS port for UserAuthn connections.
 For each connection it:
-  1. Verifies the client wants to authenticate
-  2. Starts the OAuth Device Grant flow with the IdP
-  3. Returns device_code + verification_uri to UserAuthn
-  4. Polls the IdP until the user completes MFA in browser
-  5. On success: allocates WireGuard IP, generates PSK
-  6. Sends (client_ip, server_pubkey, psk) to UserAuthn
-  7. Registers the peer in the live WireGuard interface
+  1. Reads the hello: {username, client_pubkey, psk, interface}
+  2. Validates client_pubkey (base64 → 32 bytes) and psk (§1.13)
+  3. Starts the OAuth Device Grant flow with the IdP
+  4. Returns user_code + verification_uri to UserAuthn
+  5. Polls the IdP until the user completes MFA in browser
+  6. On success: leases a WireGuard IP atomically (§1.11)
+                generates the client's WG keypair (§1.1)
+  7. Sends (client_ip, server_pubkey, client_wg_private_key,
+            client_wg_public_key) to UserAuthn — the client receives its
+     keypair from the server per spec §3.
+  8. Registers the peer in the live WireGuard interface
 """
 
 import argparse
+import base64
 import configparser
-import ipaddress
+import hashlib
 import json
 import logging
 import os
-import secrets
 import socket
 import ssl
 import subprocess
@@ -54,6 +47,7 @@ log = logging.getLogger("srvauthn")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from common import db as database
+from common.config import require_env
 
 DEFAULT_PORT     = 9999
 POLL_INTERVAL    = 5    # seconds between IdP token polls
@@ -85,21 +79,38 @@ def _http_get(url: str, token: str = None) -> dict:
         return json.loads(resp.read())
 
 
-def allocate_ip(interface: str, subnet: str) -> str:
-    """Find the next free IP in subnet for a new peer."""
-    net  = ipaddress.IPv4Network(subnet, strict=False)
-    used = {row["client_ip"] for row in database.get_all_wg_peers(interface)}
-    for host in net.hosts():
-        ip = str(host)
-        if ip == str(list(net.hosts())[0]):   # skip .1 (server)
-            continue
-        if ip not in used:
-            return ip
-    raise RuntimeError("No free IPs in subnet")
+# ── WireGuard key helpers (§1.13) ─────────────────────────────────────────────
 
+def is_valid_wg_key(value: str) -> bool:
+    """Return True if value is a base64 string decoding to exactly 32 bytes."""
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        raw = base64.b64decode(value, validate=True)
+    except Exception:
+        return False
+    return len(raw) == 32
+
+
+def wg_keypair() -> tuple[str, str]:
+    """Generate a fresh WireGuard keypair server-side (§1.1)."""
+    priv = subprocess.check_output(["wg", "genkey"]).decode().strip()
+    pub  = subprocess.check_output(
+        ["wg", "pubkey"], input=priv.encode()
+    ).decode().strip()
+    return priv, pub
+
+
+def fingerprint(value: str, n: int = 12) -> str:
+    """Short SHA-256 fingerprint of a key — for logging only."""
+    digest = hashlib.sha256(value.encode()).hexdigest()
+    return digest[:n]
+
+
+# ── WireGuard peer registration ───────────────────────────────────────────────
 
 def register_wg_peer(interface: str, pubkey: str, client_ip: str, psk: str):
-    """Add peer to live WireGuard interface."""
+    """Add peer to the live WireGuard interface and persist to wg0.conf."""
     try:
         import tempfile
         with tempfile.NamedTemporaryFile(mode='w', suffix='.psk', delete=False) as f:
@@ -124,9 +135,15 @@ def register_wg_peer(interface: str, pubkey: str, client_ip: str, psk: str):
                         f"PresharedKey = {psk}\n"
                         f"AllowedIPs = {client_ip}/32\n"
                         f"PersistentKeepalive = 25\n")
-        log.info(f"Registered peer {client_ip} ({pubkey[:16]}…)")
+        log.info(f"Registered peer {client_ip} (pub fp={fingerprint(pubkey)})")
     except subprocess.CalledProcessError as e:
         log.error(f"wg set failed: {e}")
+
+
+# ── Connection handler ───────────────────────────────────────────────────────
+
+def _send_err(conn, msg):
+    conn.sendall(json.dumps({"error": msg}).encode() + b"\n")
 
 
 def handle_client(conn: ssl.SSLSocket, addr, cfg: configparser.ConfigParser):
@@ -144,12 +161,23 @@ def handle_client(conn: ssl.SSLSocket, addr, cfg: configparser.ConfigParser):
         hello = json.loads(raw.strip())
 
         username   = hello.get("username", "")
-        client_pub = hello.get("client_pubkey", "")
+        client_psk = hello.get("psk", "")
         interface  = hello.get("interface",
                                cfg.get("server", "wg_interface", fallback="wg0"))
 
-        if not username or not client_pub:
-            conn.sendall(json.dumps({"error": "missing username or client_pubkey"}).encode() + b"\n")
+        if not username:
+            _send_err(conn, "missing_username")
+            return
+
+        # ── §1.1 + §1.13: PSK comes from the client and must be a valid
+        # 32-byte base64 WireGuard key. The client no longer sends a public
+        # key — the server now generates the client's WG keypair below.
+        if not client_psk:
+            _send_err(conn, "missing_psk")
+            return
+        if not is_valid_wg_key(client_psk):
+            log.warning(f"Rejecting hello from {peer_ip}: invalid psk")
+            _send_err(conn, "invalid_psk")
             return
 
         log.info(f"Auth request: user={username} interface={interface}")
@@ -157,7 +185,7 @@ def handle_client(conn: ssl.SSLSocket, addr, cfg: configparser.ConfigParser):
         # ── 2. Start OAuth Device Grant flow ──────────────────────────────────
         idp_url   = cfg.get("server", "idp_url", fallback="http://localhost:8080")
         client_id = cfg.get("server", "oauth_client_id", fallback="srvauthn")
-        client_sec= cfg.get("server", "oauth_client_secret", fallback="srvauthn-secret")
+        # OAuth secret is read at startup; not used in /oauth/device/code today
 
         try:
             dev_resp = _http_post(f"{idp_url}/oauth/device/code", {
@@ -166,7 +194,7 @@ def handle_client(conn: ssl.SSLSocket, addr, cfg: configparser.ConfigParser):
             })
         except Exception as e:
             log.error(f"IdP device/code failed: {e}")
-            conn.sendall(json.dumps({"error": "IdP unreachable"}).encode() + b"\n")
+            _send_err(conn, "IdP unreachable")
             return
 
         device_code      = dev_resp["device_code"]
@@ -201,10 +229,10 @@ def handle_client(conn: ssl.SSLSocket, addr, cfg: configparser.ConfigParser):
                 if err == "authorization_pending":
                     continue
                 elif err == "access_denied":
-                    conn.sendall(json.dumps({"error": "access_denied"}).encode() + b"\n")
+                    _send_err(conn, "access_denied")
                     return
                 elif err == "expired_token":
-                    conn.sendall(json.dumps({"error": "code_expired"}).encode() + b"\n")
+                    _send_err(conn, "code_expired")
                     return
                 else:
                     log.error(f"Token poll error: {body}")
@@ -214,7 +242,7 @@ def handle_client(conn: ssl.SSLSocket, addr, cfg: configparser.ConfigParser):
                 break
 
         if not access_token:
-            conn.sendall(json.dumps({"error": "auth_timeout"}).encode() + b"\n")
+            _send_err(conn, "auth_timeout")
             return
 
         # ── 5. Get userinfo from IdP ──────────────────────────────────────────
@@ -225,38 +253,48 @@ def handle_client(conn: ssl.SSLSocket, addr, cfg: configparser.ConfigParser):
             )
         except Exception as e:
             log.error(f"Userinfo failed: {e}")
-            conn.sendall(json.dumps({"error": "userinfo_failed"}).encode() + b"\n")
+            _send_err(conn, "userinfo_failed")
             return
 
-        # ── 6. Allocate WireGuard IP and PSK ─────────────────────────────────
+        # ── 6. Server generates the client's WG keypair (§1.1) ───────────────
+        client_wg_priv, client_wg_pub = wg_keypair()
+        log.info(f"Generated client WG keypair (pub fp={fingerprint(client_wg_pub)})")
+
+        # ── 7. Atomically lease an IP for this peer (§1.11) ──────────────────
         subnet  = cfg.get("server", "internal_subnet", fallback="10.10.10.0/24")
         srv_pub = cfg.get("server", "wg_public_key", fallback="")
 
-        # Check if user already has a peer (reuse IP)
-        user    = database.get_user(username)
-        existing = database.get_wg_peer(user["id"], interface) if user else None
+        user = database.get_user(username)
+        if not user:
+            _send_err(conn, "unknown_user")
+            return
 
-        if existing and existing["client_pubkey"] == client_pub:
-            client_ip = existing["client_ip"]
-            psk       = existing["psk"]
-        else:
-            client_ip = allocate_ip(interface, subnet)
-            psk       = subprocess.check_output(["wg", "genpsk"]).decode().strip()
-            if user:
-                database.upsert_wg_peer(user["id"], interface,
-                                         client_pub, client_ip, psk)
+        try:
+            client_ip = database.lease_next_ip(
+                interface     = interface,
+                subnet        = subnet,
+                user_id       = user["id"],
+                client_pubkey = client_wg_pub,
+                psk           = client_psk,
+            )
+        except database.NoFreeIPError:
+            log.error(f"Subnet {subnet} exhausted while leasing for {username}")
+            _send_err(conn, "subnet_exhausted")
+            return
 
-        # ── 7. Send WireGuard config to UserAuthn ─────────────────────────────
+        # ── 8. Send WG config to UserAuthn (incl. server-generated keypair) ──
         conn.sendall(json.dumps({
-            "status":      "success",
-            "client_ip":   client_ip,
-            "server_pubkey": srv_pub,
-            "psk":         psk,
-            "username":    info.get("username", username),
+            "status":                  "success",
+            "client_ip":               client_ip,
+            "server_pubkey":           srv_pub,
+            "client_wg_private_key":   client_wg_priv,
+            "client_wg_public_key":    client_wg_pub,
+            "psk":                     client_psk,
+            "username":                info.get("username", username),
         }).encode() + b"\n")
 
-        # ── 8. Register peer in live WireGuard ────────────────────────────────
-        register_wg_peer(interface, client_pub, client_ip, psk)
+        # ── 9. Register peer in live WireGuard ────────────────────────────────
+        register_wg_peer(interface, client_wg_pub, client_ip, client_psk)
 
     except Exception as e:
         log.exception(f"Error handling client {addr}: {e}")
@@ -265,9 +303,37 @@ def handle_client(conn: ssl.SSLSocket, addr, cfg: configparser.ConfigParser):
         log.info(f"Connection from {peer_ip} closed")
 
 
+def _load_server_wg_private_key(cfg: configparser.ConfigParser):
+    """
+    Read the server's WG private key from the file referenced by the config
+    (§1.2). The key is stored in `cfg["server"]["wg_private_key"]` so later
+    phases (Noise-IK) can consume it. Aborts on any error.
+    """
+    path = cfg.get("server", "wg_private_key_file",
+                   fallback="/etc/wireguard/privatekey-server")
+    if not os.path.exists(path):
+        log.error(f"Server WG private key not found at {path} — refusing to start")
+        sys.exit(78)
+    try:
+        with open(path) as f:
+            priv = f.read().strip()
+    except OSError as e:
+        log.error(f"Cannot read server WG private key {path}: {e}")
+        sys.exit(78)
+    if not is_valid_wg_key(priv):
+        log.error(f"Server WG private key in {path} is not a valid WG key")
+        sys.exit(78)
+    cfg.set("server", "wg_private_key", priv)
+    log.info(f"Loaded server WG private key from {path} "
+             f"(fingerprint: {fingerprint(priv)})")
+
+
 def run_server(cfg: configparser.ConfigParser, port: int):
     database.init_db()
     database.ensure_default_client()
+
+    # §1.2: load the server's WG private key at startup
+    _load_server_wg_private_key(cfg)
 
     tls_cert = cfg.get("server", "tls_cert", fallback="/certs/srv.crt")
     tls_key  = cfg.get("server", "tls_key",  fallback="/certs/srv.key")
@@ -303,6 +369,9 @@ def main():
     parser.add_argument("--config",    default="srvauthn.conf", help="Config file path")
     parser.add_argument("--port",      type=int, default=DEFAULT_PORT, help="TLS listen port")
     args = parser.parse_args()
+
+    # §1.12: fail-closed env var check.
+    require_env("OAUTH_CLIENT_SECRET")
 
     cfg = load_config(args.config)
     if not cfg.has_section("server"):

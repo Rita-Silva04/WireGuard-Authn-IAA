@@ -24,7 +24,7 @@ services:
       - DB_PATH=/data/vpnauth.db
       - RP_ID=${RP_ID:-localhost}
       - ORIGIN=${ORIGIN:-http://localhost:8080}
-      - OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET:-srvauthn-secret}
+      - OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET}
       - IDP_PORT=8080
     volumes:
       - ./data:/data
@@ -35,6 +35,11 @@ services:
     restart: unless-stopped
 
   # ── Helpdesk (internal enrolment UI) ───────────────────────────────────────
+  # §1.7 — the helpdesk binds to 127.0.0.1 inside Python. Under Docker bridge
+  # networking, port forwarding can't reach a loopback-bound socket, so the
+  # helpdesk runs in `network_mode: host`: the container shares the host's
+  # network namespace, the bind is literally to the host's 127.0.0.1, and the
+  # helpdesk is unreachable from outside the host. No `ports:` mapping needed.
   helpdesk:
     build:
       context: .
@@ -42,6 +47,7 @@ services:
     container_name: vpn-helpdesk
     environment:
       - SECRET_KEY=${SECRET_KEY}
+      - OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET}
       - DB_PATH=/data/vpnauth.db
       - RP_ID=${RP_ID:-localhost}
       - ORIGIN=${HELPDESK_ORIGIN:-http://localhost:8081}
@@ -50,8 +56,7 @@ services:
       - ./data:/data
       - ./idp/helpdesk:/app/helpdesk
       - ./common:/app/common
-    ports:
-      - "8081:8081"          # Phase 1 step 1.7 binds this to 127.0.0.1 only.
+    network_mode: host
     depends_on:
       - idp
     restart: unless-stopped
@@ -64,7 +69,7 @@ services:
     container_name: vpn-srvauthn
     environment:
       - DB_PATH=/data/vpnauth.db
-      - OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET:-srvauthn-secret}
+      - OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET}
     volumes:
       - ./data:/data
       - ./certs:/certs

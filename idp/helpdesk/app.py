@@ -1,14 +1,16 @@
 """
 Helpdesk UI — Internal enrolment and credential management.
-No authentication (assumed internal/helpdesk only).
+
+§1.7 — bound to 127.0.0.1 only. The spec marks the helpdesk as internal and
+exclusive; we refuse to listen on any other interface.
 
 Routes:
-  GET  /                      - user list
-  GET  /user/<username>       - user detail + credential status
-  POST /user/create           - create user
-  POST /user/<username>/password  - set password
+  GET  /                          - user list
+  GET  /user/<username>           - user detail + credential status
+  POST /user/create               - create user
+  POST /user/<username>/password  - set password (stored as scrypt verifier, §1.6)
   POST /user/<username>/totp      - generate/reset TOTP secret
-  GET  /user/<username>/totp/qr  - TOTP QR code image
+  GET  /user/<username>/totp/qr   - TOTP QR code image
   POST /user/<username>/fido2/start   - start FIDO2 registration
   POST /user/<username>/fido2/finish  - finish FIDO2 registration
   DELETE /user/<username>/fido2/<cred_id> - remove FIDO2 credential
@@ -18,10 +20,10 @@ import os
 import sys
 import json
 import base64
+import hashlib
 import io
 import secrets
 
-import bcrypt
 import pyotp
 import qrcode
 from flask import (Flask, render_template, request, jsonify,
@@ -37,14 +39,26 @@ from webauthn.helpers.structs import (
     ResidentKeyRequirement,
 )
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from common import db as database
+from common.config import require_env
+
+# §1.12 — refuse to start without real secrets.
+require_env("SECRET_KEY")
+require_env("OAUTH_CLIENT_SECRET")
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "helpdesk-secret")
+app.secret_key = os.environ["SECRET_KEY"]
 
 RP_ID  = os.environ.get("RP_ID",  "localhost")
 ORIGIN = os.environ.get("ORIGIN", "http://localhost")
+
+# §1.6 — scrypt parameters (must match idp/app.py).
+SCRYPT_N      = 2 ** 14
+SCRYPT_R      = 8
+SCRYPT_P      = 1
+SCRYPT_DKLEN  = 32
+SCRYPT_MAXMEM = 64 * 1024 * 1024
 
 # In-memory challenge store (helpdesk is single-user internal tool)
 _challenges: dict[str, str] = {}
@@ -57,6 +71,15 @@ def _b64url_decode(s: str) -> bytes:
     s = s.replace("-", "+").replace("_", "/")
     s += "=" * (-len(s) % 4)
     return base64.b64decode(s)
+
+
+def _derive_password_verifier(password: str, salt: bytes) -> bytes:
+    """scrypt(password, salt, N=2^14, r=8, p=1) → 32 bytes (§1.6)."""
+    return hashlib.scrypt(
+        password.encode(), salt=salt,
+        n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P,
+        dklen=SCRYPT_DKLEN, maxmem=SCRYPT_MAXMEM,
+    )
 
 
 # ── Pages ──────────────────────────────────────────────────────────────────────
@@ -73,13 +96,13 @@ def user_detail(username):
     if not user:
         return render_template("error.html", error=f"User '{username}' not found"), 404
 
-    pw_hash  = database.get_password_hash(user["id"])
+    has_pw   = database.has_password(user["id"])
     totp_row = database.get_totp_secret(user["id"])
     fido2s   = database.get_fido2_credentials(user["id"])
 
     return render_template("user.html",
                            user=user,
-                           has_password=pw_hash is not None,
+                           has_password=has_pw,
                            totp=totp_row,
                            fido2_creds=fido2s)
 
@@ -96,7 +119,7 @@ def create_user():
     return redirect(url_for("user_detail", username=username))
 
 
-# ── Password management ────────────────────────────────────────────────────────
+# ── Password management (§1.6 — scrypt verifier) ──────────────────────────────
 
 @app.route("/user/<username>/password", methods=["POST"])
 def set_password(username):
@@ -109,12 +132,13 @@ def set_password(username):
         return render_template("user.html",
                                user=user,
                                error="Password must be at least 8 characters.",
-                               has_password=database.get_password_hash(user["id"]) is not None,
+                               has_password=database.has_password(user["id"]),
                                totp=database.get_totp_secret(user["id"]),
                                fido2_creds=database.get_fido2_credentials(user["id"]))
 
-    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-    database.set_password(user["id"], hashed)
+    salt     = secrets.token_bytes(16)
+    verifier = _derive_password_verifier(password, salt)
+    database.set_password_verifier(user["id"], salt, verifier)
     return redirect(url_for("user_detail", username=username))
 
 
@@ -170,7 +194,7 @@ def totp_qr(username):
     return send_file(buf, mimetype="image/png")
 
 
-# ── FIDO2 management ───────────────────────────────────────────────────────────
+# ── FIDO2 management (§1.9 — user verification REQUIRED) ──────────────────────
 
 @app.route("/user/<username>/fido2/start", methods=["POST"])
 def fido2_register_start(username):
@@ -190,7 +214,7 @@ def fido2_register_start(username):
         user_id        = str(user["id"]).encode(),
         exclude_credentials = exclude,
         authenticator_selection = AuthenticatorSelectionCriteria(
-            user_verification = UserVerificationRequirement.PREFERRED,
+            user_verification = UserVerificationRequirement.REQUIRED,   # §1.9
             resident_key      = ResidentKeyRequirement.PREFERRED,
         ),
     )
@@ -215,6 +239,7 @@ def fido2_register_finish(username):
             expected_challenge = _b64url_decode(challenge_b64),
             expected_rp_id    = RP_ID,
             expected_origin   = ORIGIN,
+            require_user_verification = True,   # §1.9
         )
     except Exception as e:
         return jsonify({"error": str(e)}), 400
@@ -251,5 +276,7 @@ def health():
 
 if __name__ == "__main__":
     database.init_db()
-    app.run(host="0.0.0.0", port=int(os.environ.get("HELPDESK_PORT", 8081)),
+    # §1.7 — listen on the loopback interface only.
+    app.run(host="127.0.0.1",
+            port=int(os.environ.get("HELPDESK_PORT", 8081)),
             debug=False)

@@ -1,25 +1,37 @@
 """
 Central SQLite database for the VPN authentication stack.
 Tables:
-  users            - core user accounts
-  passwords        - hashed passwords
+  users            - core user accounts (+ failed_attempts, locked_until for §1.10)
+  passwords        - scrypt verifier + salt for challenge-response (§1.6)
   totp_secrets     - TOTP seeds
   fido2_credentials- WebAuthn/FIDO2 credentials
   oauth_codes      - short-lived authorization codes
-  oauth_tokens     - issued access/refresh tokens
+  oauth_tokens     - issued access tokens (stored as SHA-256 hash, single-use, §1.8)
   rba_events       - authentication events for RBA
   rba_ip_history   - per-user IP history
   wg_peers         - issued WireGuard peer configs
+  mfa_sessions     - per-login MFA state (+ password_nonce, nonce_consumed for §1.6)
 """
 
 import sqlite3
 import os
+import hashlib
+import ipaddress
 import threading
 from contextlib import contextmanager
 
 DB_PATH = os.environ.get("DB_PATH", "/data/vpnauth.db")
 
+# Bump this whenever the schema changes so old databases are recreated.
+# v1 — Phase 1: scrypt password verifier, hashed/single-use tokens, lockout
+# columns on users, password nonce on mfa_sessions.
+SCHEMA_VERSION = 1
+
 _local = threading.local()
+
+
+class NoFreeIPError(Exception):
+    """Raised when no IP is free in the configured subnet."""
 
 
 def get_conn():
@@ -44,21 +56,86 @@ def db():
         raise
 
 
+def _current_schema_version(conn) -> int:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master "
+        "WHERE type='table' AND name='schema_version'"
+    ).fetchone()
+    if not row:
+        # Detect Phase 0 schema (no schema_version table). If the users table
+        # exists, treat the DB as version 0 so init_db() can wipe and recreate.
+        users_exists = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='users'"
+        ).fetchone() is not None
+        return 0 if users_exists else -1
+    row = conn.execute("SELECT version FROM schema_version").fetchone()
+    return row["version"] if row else 0
+
+
+def _drop_all_tables(conn):
+    """Drop every user-defined table — used when migrating between schemas."""
+    # Foreign-key enforcement is on by default; turn it off for the duration
+    # of the wipe so DROP TABLE order doesn't matter.
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+        for t in tables:
+            conn.execute(f"DROP TABLE IF EXISTS {t['name']}")
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
 def init_db():
+    # Schema-mismatch migration: if the persisted DB was created by an older
+    # codebase, the simplest correct action is to remove the file and let it
+    # be recreated from scratch (§Phase 1 changed several column shapes —
+    # there is no in-place migration). Foreign-key constraints make a
+    # table-by-table wipe inside a transaction fragile; deleting the file
+    # avoids that entire class of problems.
+    if os.path.exists(DB_PATH):
+        try:
+            probe = sqlite3.connect(DB_PATH)
+            probe.row_factory = sqlite3.Row
+            current = _current_schema_version(probe)
+            probe.close()
+        except sqlite3.DatabaseError:
+            current = -1
+        if current >= 0 and current != SCHEMA_VERSION:
+            print(f"[DB] Schema v{current} found, expected v{SCHEMA_VERSION} "
+                  f"— wiping {DB_PATH} to rebuild from scratch.")
+            # Drop the thread-local connection (if any) so the next get_conn()
+            # opens a fresh one against the new file.
+            if hasattr(_local, "conn") and _local.conn is not None:
+                _local.conn.close()
+                _local.conn = None
+            os.unlink(DB_PATH)
+            for suffix in ("-wal", "-shm"):
+                p = DB_PATH + suffix
+                if os.path.exists(p):
+                    os.unlink(p)
+
     with db() as conn:
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS users (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            username    TEXT    UNIQUE NOT NULL,
-            display_name TEXT,
-            active      INTEGER DEFAULT 1,
-            created_at  TEXT    DEFAULT (datetime('now')),
-            updated_at  TEXT    DEFAULT (datetime('now'))
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            username        TEXT    UNIQUE NOT NULL,
+            display_name    TEXT,
+            active          INTEGER DEFAULT 1,
+            failed_attempts INTEGER DEFAULT 0,
+            locked_until    INTEGER DEFAULT 0,
+            last_failure_at INTEGER DEFAULT 0,
+            created_at      TEXT    DEFAULT (datetime('now')),
+            updated_at      TEXT    DEFAULT (datetime('now'))
         );
 
         CREATE TABLE IF NOT EXISTS passwords (
             user_id     INTEGER PRIMARY KEY REFERENCES users(id),
-            hash        TEXT NOT NULL,
+            salt        BLOB NOT NULL,
+            verifier    BLOB NOT NULL,
             updated_at  TEXT DEFAULT (datetime('now'))
         );
 
@@ -101,12 +178,13 @@ def init_db():
 
         CREATE TABLE IF NOT EXISTS oauth_tokens (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            access_token    TEXT UNIQUE NOT NULL,
+            token_hash      TEXT UNIQUE NOT NULL,
             token_type      TEXT DEFAULT 'Bearer',
             user_id         INTEGER NOT NULL REFERENCES users(id),
             client_id       TEXT NOT NULL,
             scope           TEXT DEFAULT 'vpn',
             expires_at      TEXT NOT NULL,
+            used_at         TEXT,
             created_at      TEXT DEFAULT (datetime('now'))
         );
 
@@ -153,11 +231,21 @@ def init_db():
             totp_ok         INTEGER DEFAULT 0,
             fido2_ok        INTEGER DEFAULT 0,
             required_factors TEXT DEFAULT '[]',
+            password_nonce  BLOB,
+            nonce_consumed  INTEGER DEFAULT 0,
             expires_at      TEXT NOT NULL,
             created_at      TEXT DEFAULT (datetime('now'))
         );
+
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER PRIMARY KEY
+        );
         """)
-    print(f"[DB] Initialised at {DB_PATH}")
+        # Record the schema version (idempotent).
+        conn.execute("DELETE FROM schema_version")
+        conn.execute("INSERT INTO schema_version (version) VALUES (?)",
+                     (SCHEMA_VERSION,))
+    print(f"[DB] Initialised at {DB_PATH} (schema v{SCHEMA_VERSION})")
 
 
 # ── User helpers ───────────────────────────────────────────────────────────────
@@ -192,23 +280,101 @@ def list_users():
         return conn.execute("SELECT * FROM users ORDER BY username").fetchall()
 
 
-# ── Password helpers ───────────────────────────────────────────────────────────
+# ── Lockout helpers (§1.10) ────────────────────────────────────────────────────
 
-def set_password(user_id: int, hashed: str):
-    with db() as conn:
-        conn.execute("""
-            INSERT INTO passwords (user_id, hash) VALUES (?,?)
-            ON CONFLICT(user_id) DO UPDATE SET hash=excluded.hash,
-            updated_at=datetime('now')
-        """, (user_id, hashed))
+LOCKOUT_THRESHOLD = 5
+LOCKOUT_WINDOW    = 300      # seconds — 5 minutes
+LOCKOUT_DURATION  = 900      # seconds — 15 minutes
 
 
-def get_password_hash(user_id: int):
+def is_user_locked(user_id: int) -> bool:
+    """Return True if the user is currently locked out."""
+    import time
     with db() as conn:
         row = conn.execute(
-            "SELECT hash FROM passwords WHERE user_id=?", (user_id,)
+            "SELECT locked_until FROM users WHERE id=?", (user_id,)
         ).fetchone()
-        return row["hash"] if row else None
+        if not row:
+            return False
+        return row["locked_until"] > int(time.time())
+
+
+def lockout_seconds_remaining(user_id: int) -> int:
+    import time
+    with db() as conn:
+        row = conn.execute(
+            "SELECT locked_until FROM users WHERE id=?", (user_id,)
+        ).fetchone()
+        if not row:
+            return 0
+        return max(0, row["locked_until"] - int(time.time()))
+
+
+def record_factor_failure(user_id: int):
+    """Increment failure count; lock the account if threshold reached in window."""
+    import time
+    now = int(time.time())
+    with db() as conn:
+        row = conn.execute(
+            "SELECT failed_attempts, last_failure_at FROM users WHERE id=?",
+            (user_id,)
+        ).fetchone()
+        if not row:
+            return
+        # Reset counter if last failure is outside the window
+        if now - row["last_failure_at"] > LOCKOUT_WINDOW:
+            attempts = 1
+        else:
+            attempts = row["failed_attempts"] + 1
+
+        if attempts >= LOCKOUT_THRESHOLD:
+            conn.execute(
+                "UPDATE users SET failed_attempts=0, "
+                "last_failure_at=?, locked_until=? WHERE id=?",
+                (now, now + LOCKOUT_DURATION, user_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE users SET failed_attempts=?, last_failure_at=? "
+                "WHERE id=?",
+                (attempts, now, user_id),
+            )
+
+
+def reset_failed_attempts(user_id: int):
+    """Clear failure counter after a fully successful authentication."""
+    with db() as conn:
+        conn.execute(
+            "UPDATE users SET failed_attempts=0, locked_until=0 WHERE id=?",
+            (user_id,),
+        )
+
+
+# ── Password helpers (challenge-response, §1.6) ────────────────────────────────
+
+def set_password_verifier(user_id: int, salt: bytes, verifier: bytes):
+    """Store (salt, verifier) for the scrypt-based challenge-response login."""
+    with db() as conn:
+        conn.execute("""
+            INSERT INTO passwords (user_id, salt, verifier) VALUES (?,?,?)
+            ON CONFLICT(user_id) DO UPDATE SET salt=excluded.salt,
+            verifier=excluded.verifier, updated_at=datetime('now')
+        """, (user_id, salt, verifier))
+
+
+def get_password_verifier(user_id: int):
+    """Return (salt, verifier) tuple or None if the user has no password set."""
+    with db() as conn:
+        row = conn.execute(
+            "SELECT salt, verifier FROM passwords WHERE user_id=?", (user_id,)
+        ).fetchone()
+        if not row:
+            return None
+        return (row["salt"], row["verifier"])
+
+
+def has_password(user_id: int) -> bool:
+    return get_password_verifier(user_id) is not None
 
 
 # ── TOTP helpers ───────────────────────────────────────────────────────────────
@@ -306,23 +472,43 @@ def deny_device_code(device_code: str):
         )
 
 
-# ── OAuth token helpers ────────────────────────────────────────────────────────
+# ── OAuth token helpers (hashed, single-use, §1.8) ─────────────────────────────
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
 
 def create_access_token(access_token: str, user_id: int, client_id: str,
                          scope: str, expires_at: str):
+    """Store SHA-256 hash of the token; the plaintext token is never persisted."""
     with db() as conn:
         conn.execute("""
             INSERT INTO oauth_tokens
-            (access_token, user_id, client_id, scope, expires_at)
+            (token_hash, user_id, client_id, scope, expires_at)
             VALUES (?,?,?,?,?)
-        """, (access_token, user_id, client_id, scope, expires_at))
+        """, (_hash_token(access_token), user_id, client_id, scope, expires_at))
 
 
 def get_access_token(token: str):
+    """Look up by hash of the presented token."""
     with db() as conn:
         return conn.execute(
-            "SELECT * FROM oauth_tokens WHERE access_token=?", (token,)
+            "SELECT * FROM oauth_tokens WHERE token_hash=?", (_hash_token(token),)
         ).fetchone()
+
+
+def mark_token_used(token: str) -> bool:
+    """
+    Mark a token as used. Returns True if this call was the one that flipped
+    used_at from NULL to now; False if it was already used (replay).
+    """
+    with db() as conn:
+        cur = conn.execute(
+            "UPDATE oauth_tokens SET used_at=datetime('now') "
+            "WHERE token_hash=? AND used_at IS NULL",
+            (_hash_token(token),)
+        )
+        return cur.rowcount == 1
 
 
 # ── MFA session helpers ────────────────────────────────────────────────────────
@@ -351,6 +537,38 @@ def update_mfa_session(session_id: str, **kwargs):
         conn.execute(
             f"UPDATE mfa_sessions SET {sets} WHERE session_id=?", vals
         )
+
+
+def issue_password_nonce(session_id: str, nonce: bytes):
+    """Set a fresh nonce for the password challenge and mark it unconsumed."""
+    with db() as conn:
+        conn.execute(
+            "UPDATE mfa_sessions SET password_nonce=?, nonce_consumed=0 "
+            "WHERE session_id=?",
+            (nonce, session_id),
+        )
+
+
+def consume_password_nonce(session_id: str) -> bytes | None:
+    """
+    Atomically read the nonce and mark it consumed. Returns the nonce bytes
+    if it was unconsumed (the caller may use it once); None if already consumed
+    or missing (replay).
+    """
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT password_nonce, nonce_consumed FROM mfa_sessions "
+            "WHERE session_id=?",
+            (session_id,),
+        ).fetchone()
+        if not row or row["password_nonce"] is None or row["nonce_consumed"]:
+            return None
+        conn.execute(
+            "UPDATE mfa_sessions SET nonce_consumed=1 WHERE session_id=?",
+            (session_id,),
+        )
+        return bytes(row["password_nonce"])
 
 
 # ── RBA helpers ────────────────────────────────────────────────────────────────
@@ -417,6 +635,7 @@ def upsert_wg_peer(user_id: int, interface: str, client_pubkey: str,
             client_pubkey=excluded.client_pubkey,
             client_ip=excluded.client_ip,
             psk=excluded.psk,
+            active=1,
             created_at=datetime('now')
         """, (user_id, interface, client_pubkey, client_ip, psk))
 
@@ -433,6 +652,75 @@ def get_all_wg_peers(interface: str):
         return conn.execute(
             "SELECT * FROM wg_peers WHERE interface=? AND active=1", (interface,)
         ).fetchall()
+
+
+def lease_next_ip(interface: str, subnet: str, user_id: int,
+                  client_pubkey: str, psk: str) -> str:
+    """
+    Atomically find the next free IP in `subnet` and claim it for this user.
+
+    The whole read-pick-write sequence runs inside a single BEGIN IMMEDIATE
+    transaction so two concurrent requests cannot pick the same IP (§1.11).
+
+    If the user already has an active lease on this interface, the existing
+    row is updated in place (pubkey + psk refreshed) and the existing IP is
+    returned — keeping pre-existing semantics from srvauthn.allocate_ip.
+
+    Raises NoFreeIPError if the subnet is exhausted.
+    """
+    net = ipaddress.IPv4Network(subnet, strict=False)
+    server_ip = str(list(net.hosts())[0])    # .1 is reserved for the server
+
+    conn = get_conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+
+        # Re-lease if this user already owns a row on this interface.
+        existing = conn.execute(
+            "SELECT client_ip FROM wg_peers "
+            "WHERE user_id=? AND interface=? AND active=1",
+            (user_id, interface),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE wg_peers SET client_pubkey=?, psk=?, "
+                "created_at=datetime('now') "
+                "WHERE user_id=? AND interface=?",
+                (client_pubkey, psk, user_id, interface),
+            )
+            conn.commit()
+            return existing["client_ip"]
+
+        used = {row["client_ip"] for row in conn.execute(
+            "SELECT client_ip FROM wg_peers WHERE interface=? AND active=1",
+            (interface,),
+        ).fetchall()}
+
+        chosen = None
+        for host in net.hosts():
+            ip = str(host)
+            if ip == server_ip:
+                continue
+            if ip not in used:
+                chosen = ip
+                break
+
+        if chosen is None:
+            conn.rollback()
+            raise NoFreeIPError(f"No free IPs in {subnet}")
+
+        conn.execute(
+            "INSERT INTO wg_peers "
+            "(user_id, interface, client_pubkey, client_ip, psk) "
+            "VALUES (?,?,?,?,?)",
+            (user_id, interface, client_pubkey, chosen, psk),
+        )
+        conn.commit()
+        return chosen
+
+    except Exception:
+        conn.rollback()
+        raise
 
 
 # ── OAuth client helpers ───────────────────────────────────────────────────────

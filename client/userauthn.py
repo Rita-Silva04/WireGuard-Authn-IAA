@@ -13,26 +13,27 @@ base.conf:
     auth_port   = 9999
     tls_cert    = /path/to/srv.crt   # server TLS cert for verification
 
-Flow:
-  1. Generate a fresh WireGuard keypair
-  2. Connect to SrvAuthn via TLS (verify server cert)
-  3. Send hello: {username, client_pubkey, interface}
+Flow (spec §3 — server-driven keypair):
+  1. Generate a fresh PSK locally (§1.1, parameter 6)
+  2. Connect to SrvAuthn via TLS (verify server cert — no fallback, §1.3)
+  3. Send hello: {username, psk, interface}
   4. Receive: {user_code, verification_uri}
   5. Open browser at verification_uri
-  6. Wait for SrvAuthn to send WireGuard config
+  6. Wait for SrvAuthn to send the WG config — including the *server-generated*
+     client keypair (parameter 1) and the server-allocated private IP
+     (parameter 2)
   7. Apply WireGuard interface
 """
 
 import argparse
+import base64
 import configparser
 import json
 import os
-import platform
 import socket
 import ssl
 import subprocess
 import sys
-import tempfile
 import webbrowser
 import logging
 
@@ -43,6 +44,8 @@ logging.basicConfig(
 log = logging.getLogger("userauthn")
 
 
+# ── Config ────────────────────────────────────────────────────────────────────
+
 def load_config(path: str) -> configparser.ConfigParser:
     cfg = configparser.ConfigParser()
     if not os.path.exists(path):
@@ -52,31 +55,50 @@ def load_config(path: str) -> configparser.ConfigParser:
     return cfg
 
 
-def generate_wg_keypair() -> tuple[str, str]:
-    """Generate a WireGuard private/public key pair. Returns (private, public)."""
-    private = subprocess.check_output(["wg", "genkey"]).decode().strip()
-    public  = subprocess.check_output(
-        ["wg", "pubkey"], input=private.encode()
-    ).decode().strip()
-    return private, public
+# ── WireGuard key helpers ─────────────────────────────────────────────────────
 
+def is_valid_wg_key(value: str) -> bool:
+    """Base64 string decoding to exactly 32 bytes — the WG key shape."""
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        raw = base64.b64decode(value, validate=True)
+    except Exception:
+        return False
+    return len(raw) == 32
+
+
+def generate_psk() -> str:
+    """Generate a fresh WireGuard pre-shared key (parameter 6, §1.1)."""
+    return subprocess.check_output(["wg", "genpsk"]).decode().strip()
+
+
+# ── TLS connect (§1.3 — no silent CERT_NONE fallback) ─────────────────────────
 
 def connect_to_srvauthn(address: str, auth_port: int,
-                          tls_cert: str | None) -> ssl.SSLSocket:
-    """Open a TLS connection to SrvAuthn, verifying server identity."""
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                        tls_cert: str | None) -> ssl.SSLSocket:
+    """
+    Open a TLS connection to SrvAuthn, verifying server identity against the
+    pinned self-signed certificate. If `tls_cert` is missing or unreadable we
+    refuse to connect — there is no insecure fallback path (§1.3).
+    """
+    if not tls_cert:
+        log.error("No tls_cert configured — refusing to connect. "
+                  "Set tls_cert in base.conf to the server's pinned certificate.")
+        sys.exit(1)
+    if not os.path.exists(tls_cert):
+        log.error(f"Server TLS certificate not found at {tls_cert} — "
+                  f"refusing to connect.")
+        sys.exit(1)
+    if not os.access(tls_cert, os.R_OK):
+        log.error(f"Server TLS certificate at {tls_cert} is not readable — "
+                  f"refusing to connect.")
+        sys.exit(1)
 
-    if tls_cert and os.path.exists(tls_cert):
-        # Pin to the server's self-signed cert
-        ctx.load_verify_locations(tls_cert)
-        ctx.verify_mode = ssl.CERT_REQUIRED
-        log.info(f"TLS: verifying against {tls_cert}")
-    else:
-        # In development, allow without cert verification
-        # Production deployments MUST provide a cert
-        ctx.check_hostname = False
-        ctx.verify_mode    = ssl.CERT_NONE
-        log.warning("TLS: certificate verification disabled (development mode)")
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.load_verify_locations(tls_cert)
+    ctx.verify_mode = ssl.CERT_REQUIRED
+    log.info(f"TLS: verifying against {tls_cert}")
 
     raw = socket.create_connection((address, auth_port), timeout=30)
     return ctx.wrap_socket(raw, server_hostname=address)
@@ -96,9 +118,11 @@ def recv_json(sock: ssl.SSLSocket) -> dict:
     return json.loads(raw.strip())
 
 
+# ── WireGuard interface bring-up ──────────────────────────────────────────────
+
 def apply_wireguard_interface(interface: str, private_key: str, client_ip: str,
-                               server_pubkey: str, server_address: str,
-                               server_port: int, psk: str, dns: str = "1.1.1.1"):
+                              server_pubkey: str, server_address: str,
+                              server_port: int, psk: str, dns: str = "1.1.1.1"):
     """Write and apply a WireGuard interface configuration."""
     config = f"""[Interface]
 PrivateKey = {private_key}
@@ -114,16 +138,13 @@ PersistentKeepalive = 25
 """
     conf_path = f"/etc/wireguard/{interface}.conf"
 
-    # Write config
     with open(conf_path, "w") as f:
         f.write(config)
     os.chmod(conf_path, 0o600)
-
     log.info(f"Written {conf_path}")
 
     # Bring down if already up
-    subprocess.run(["wg-quick", "down", interface],
-                   capture_output=True)
+    subprocess.run(["wg-quick", "down", interface], capture_output=True)
 
     # Bring up
     result = subprocess.run(["wg-quick", "up", interface],
@@ -144,6 +165,8 @@ def print_banner():
 ╚══════════════════════════════════════════════════╝
 """)
 
+
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(
@@ -168,10 +191,10 @@ def main():
     tls_cert     = cfg.get("server", "tls_cert",     fallback=None)
     server_pubkey= cfg.get("server", "public_key",   fallback="")
 
-    # ── Step 1: Generate WireGuard keypair ────────────────────────────────────
-    log.info("Generating WireGuard keypair…")
-    private_key, public_key = generate_wg_keypair()
-    log.info(f"Client public key: {public_key}")
+    # ── Step 1: Generate PSK only (server now generates the keypair, §1.1) ────
+    log.info("Generating WireGuard PSK…")
+    psk = generate_psk()
+    log.info(f"PSK generated (length={len(base64.b64decode(psk))} bytes)")
 
     # ── Step 2: Connect to SrvAuthn ───────────────────────────────────────────
     log.info(f"Connecting to SrvAuthn at {srv_address}:{auth_port}…")
@@ -187,11 +210,11 @@ def main():
     sock.settimeout(660)
 
     try:
-        # ── Step 3: Send hello ────────────────────────────────────────────────
+        # ── Step 3: Send hello (username + PSK; no client_pubkey, §1.1) ──────
         send_json(sock, {
-            "username":     args.username,
-            "client_pubkey": public_key,
-            "interface":    args.interface,
+            "username":  args.username,
+            "psk":       psk,
+            "interface": args.interface,
         })
 
         # ── Step 4: Receive auth instructions ─────────────────────────────────
@@ -215,7 +238,6 @@ def main():
 │  Your code: {user_code:<36} │
 └─────────────────────────────────────────────────┘
 """)
-            # Auto-open browser
             try:
                 webbrowser.open(verification_uri)
                 log.info("Browser opened automatically")
@@ -237,8 +259,22 @@ def main():
 
         client_ip    = result["client_ip"]
         srv_pub      = result.get("server_pubkey", server_pubkey)
-        psk          = result["psk"]
+        psk_back     = result.get("psk", psk)
+        client_priv  = result.get("client_wg_private_key", "")
+        client_pub   = result.get("client_wg_public_key", "")
         username     = result.get("username", args.username)
+
+        # ── §1.1 validation: server must have sent a 32-byte private key ─────
+        if not is_valid_wg_key(client_priv) or not is_valid_wg_key(client_pub):
+            log.error("Server response missing or malformed client WG keypair "
+                      "(expected base64-encoded 32-byte keys).")
+            sys.exit(1)
+
+        if psk_back != psk:
+            # Server is required to echo back the same PSK; mismatch means
+            # the server changed our PSK which violates the spec.
+            log.error("Server echoed back a different PSK — refusing to apply.")
+            sys.exit(1)
 
         log.info(f"Auth success for {username} — allocated IP: {client_ip}")
 
@@ -246,7 +282,7 @@ def main():
         log.info(f"Applying WireGuard interface {args.interface}…")
         ok = apply_wireguard_interface(
             interface     = args.interface,
-            private_key   = private_key,
+            private_key   = client_priv,
             client_ip     = client_ip,
             server_pubkey = srv_pub,
             server_address= srv_address,

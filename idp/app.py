@@ -6,17 +6,21 @@ Endpoints:
   GET  /oauth/device               - browser: enter user_code
   POST /oauth/device/verify        - browser: submit user_code → MFA flow
   GET  /oauth/mfa/<session_id>     - browser: MFA challenge page
+  GET  /oauth/mfa/<session_id>/password/challenge
+                                   - issue a fresh challenge {salt, nonce} (§1.6)
   POST /oauth/mfa/<session_id>/password
+                                   - submit HMAC proof (§1.6)
   POST /oauth/mfa/<session_id>/totp
   GET  /oauth/mfa/<session_id>/fido2/start
   POST /oauth/mfa/<session_id>/fido2/finish
   POST /oauth/token                - poll for token (by SrvAuthn)
-  GET  /oauth/userinfo             - validate token, return user info + WG params
+  GET  /oauth/userinfo             - validate token, return user info (single-use, §1.8)
 """
 
 import os
 import sys
 import json
+import hmac
 import secrets
 import hashlib
 import base64
@@ -24,7 +28,6 @@ from datetime import datetime, timezone, timedelta
 
 from flask import (Flask, request, jsonify, render_template,
                    redirect, url_for, session, Response)
-import bcrypt
 import pyotp
 from webauthn import (
     generate_authentication_options,
@@ -35,16 +38,28 @@ from webauthn.helpers.structs import UserVerificationRequirement
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from common import db as database
+from common.config import require_env
 from idp.rba import compute_risk, risk_label
 
+# §1.12: refuse to start with missing/placeholder secrets.
+require_env("SECRET_KEY")
+require_env("OAUTH_CLIENT_SECRET")
+
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "idp-secret-change-me")
+app.secret_key = os.environ["SECRET_KEY"]
 
 RP_ID    = os.environ.get("RP_ID", "localhost")
 ORIGIN   = os.environ.get("ORIGIN", "http://localhost")
-DEV_CODE_TTL   = 600   # seconds
-TOKEN_TTL      = 3600  # seconds
-MFA_SESSION_TTL = 300  # seconds
+DEV_CODE_TTL    = 600   # seconds
+TOKEN_TTL       = 60    # §1.8 — short-lived OAuth access tokens
+MFA_SESSION_TTL = 300   # seconds
+
+# §1.6 — scrypt parameters for the password verifier.
+SCRYPT_N      = 2 ** 14
+SCRYPT_R      = 8
+SCRYPT_P      = 1
+SCRYPT_DKLEN  = 32
+SCRYPT_MAXMEM = 64 * 1024 * 1024   # 64 MiB headroom for hashlib.scrypt
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -75,12 +90,21 @@ def _user_code() -> str:
     return f"{a}-{b}"
 
 
+def _lockout_response(user, session_id, factor):
+    """Render an 'account temporarily locked' page (§1.10)."""
+    remaining = database.lockout_seconds_remaining(user["id"])
+    msg = (f"Account temporarily locked due to repeated failures. "
+           f"Try again in {remaining // 60} min {remaining % 60} s.")
+    return render_template("error.html", error=msg), 429
+
+
 # ── Device Authorization Grant ─────────────────────────────────────────────────
 
 @app.route("/oauth/device/code", methods=["POST"])
 def device_code():
     """RFC 8628 §3.1 — Device Authorization Request."""
-    client_id = request.form.get("client_id") or request.json.get("client_id", "")
+    client_id = (request.form.get("client_id")
+                 or (request.json or {}).get("client_id", ""))
     scope     = request.form.get("scope", "vpn")
 
     client = database.get_oauth_client(client_id)
@@ -129,10 +153,30 @@ def device_verify():
         return render_template("device.html",
                                error="Unknown username.", prefill=user_code)
 
-    # RBA — compute risk and required factors
+    # §1.10 — refuse to start an MFA session for a locked-out user.
+    if database.is_user_locked(user["id"]):
+        return _lockout_response(user, None, factor=None)
+
+    # RBA — compute risk and required factors (§1.4)
     ip  = request.remote_addr or "0.0.0.0"
     ua  = request.headers.get("User-Agent", "")
     rba = compute_risk(username, ip, ua)
+
+    # §1.4 — strict policy: reject if the user lacks a required factor.
+    if rba["factors"] is None:
+        missing = ", ".join(rba["missing"]) or "additional factors"
+        msg = (f"Risk level {rba['level']} requires factors you have not "
+               f"enrolled ({missing}). Contact your helpdesk to enrol.")
+        database.log_rba_event(
+            username    = username,
+            event_type  = "auth_blocked_missing_factor",
+            success     = False,
+            ip_address  = ip,
+            risk_score  = rba["score"],
+            factors_used= json.dumps(rba.get("missing", [])),
+            user_agent  = ua,
+        )
+        return render_template("error.html", error=msg), 403
 
     # Create MFA session
     mfa_sid = secrets.token_urlsafe(24)
@@ -144,13 +188,11 @@ def device_verify():
         expires_at      = _expires_iso(MFA_SESSION_TTL),
     )
 
-    # Log RBA event (pending)
     database.log_rba_event(
         username    = username,
         event_type  = "auth_start",
         success     = False,
         ip_address  = ip,
-        asn         = rba["asn"],
         risk_score  = rba["score"],
         factors_used= json.dumps(rba["factors"]),
         user_agent  = ua,
@@ -180,11 +222,16 @@ def mfa_page(session_id):
     if not mfa or _is_expired(mfa["expires_at"]):
         return render_template("error.html", error="MFA session expired."), 400
 
+    user = database.get_user_by_id(mfa["user_id"])
+
+    # §1.10 — lockout check at the top of every factor route.
+    if database.is_user_locked(user["id"]):
+        return _lockout_response(user, session_id, factor=None)
+
     factor = _mfa_next_factor(mfa)
     if factor is None:
         return _complete_auth(mfa, session_id)
 
-    user = database.get_user_by_id(mfa["user_id"])
     required = json.loads(mfa["required_factors"])
     return render_template("mfa.html",
                            session_id=session_id,
@@ -196,17 +243,72 @@ def mfa_page(session_id):
                            fido2_ok=mfa["fido2_ok"])
 
 
+# ── §1.6 — Password challenge-response ────────────────────────────────────────
+
+@app.route("/oauth/mfa/<session_id>/password/challenge", methods=["GET"])
+def mfa_password_challenge(session_id):
+    """
+    Issue a fresh nonce and return (salt, nonce) so the browser can compute
+    proof = HMAC-SHA256(scrypt(password, salt), nonce). The nonce is stored
+    in the MFA session and marked unconsumed; it is invalidated on the next
+    proof submission (success or failure) so each challenge is single-use.
+    """
+    mfa = database.get_mfa_session(session_id)
+    if not mfa or _is_expired(mfa["expires_at"]):
+        return jsonify({"error": "session_expired"}), 400
+
+    user = database.get_user_by_id(mfa["user_id"])
+    if database.is_user_locked(user["id"]):
+        return jsonify({"error": "account_locked",
+                        "retry_after_seconds":
+                            database.lockout_seconds_remaining(user["id"])}), 429
+
+    verifier = database.get_password_verifier(user["id"])
+    if not verifier:
+        return jsonify({"error": "no_password_enrolled"}), 400
+
+    salt, _ = verifier
+    nonce = secrets.token_bytes(32)
+    database.issue_password_nonce(session_id, nonce)
+
+    return jsonify({
+        "salt_b64":  base64.b64encode(salt).decode(),
+        "nonce_b64": base64.b64encode(nonce).decode(),
+        "scrypt": {"N": SCRYPT_N, "r": SCRYPT_R, "p": SCRYPT_P,
+                   "dkLen": SCRYPT_DKLEN},
+    })
+
+
 @app.route("/oauth/mfa/<session_id>/password", methods=["POST"])
 def mfa_password(session_id):
+    """Verify proof = HMAC-SHA256(verifier, nonce) — replay-rejected (§1.6)."""
     mfa = database.get_mfa_session(session_id)
     if not mfa or _is_expired(mfa["expires_at"]):
         return jsonify({"error": "Session expired"}), 400
 
-    password = request.form.get("password", "")
-    user     = database.get_user_by_id(mfa["user_id"])
-    pw_hash  = database.get_password_hash(mfa["user_id"])
+    user = database.get_user_by_id(mfa["user_id"])
 
-    if not pw_hash or not bcrypt.checkpw(password.encode(), pw_hash.encode()):
+    if database.is_user_locked(user["id"]):
+        return _lockout_response(user, session_id, factor="password")
+
+    proof_b64 = request.form.get("proof", "")
+    try:
+        proof = base64.b64decode(proof_b64, validate=True)
+    except Exception:
+        proof = b""
+
+    # Atomically consume the nonce — a second POST with the same nonce will
+    # find it consumed and be rejected as replay.
+    nonce = database.consume_password_nonce(session_id)
+    verifier = database.get_password_verifier(user["id"])
+    valid    = False
+    if nonce and verifier and len(proof) == 32:
+        _, verifier_bytes = verifier
+        expected = hmac.new(verifier_bytes, nonce, hashlib.sha256).digest()
+        valid = hmac.compare_digest(expected, proof)
+
+    if not valid:
+        database.record_factor_failure(user["id"])
         database.log_rba_event(user["username"], "password_fail", False,
                                 request.remote_addr)
         return render_template("mfa.html",
@@ -228,9 +330,13 @@ def mfa_totp(session_id):
     if not mfa or _is_expired(mfa["expires_at"]):
         return jsonify({"error": "Session expired"}), 400
 
+    user = database.get_user_by_id(mfa["user_id"])
+
+    if database.is_user_locked(user["id"]):
+        return _lockout_response(user, session_id, factor="totp")
+
     code  = request.form.get("code", "").strip()
-    user  = database.get_user_by_id(mfa["user_id"])
-    totp_row = database.get_totp_secret(mfa["user_id"])
+    totp_row = database.get_totp_secret(user["id"])
 
     valid = False
     if totp_row and totp_row["confirmed"]:
@@ -238,6 +344,7 @@ def mfa_totp(session_id):
         valid = totp.verify(code, valid_window=1)
 
     if not valid:
+        database.record_factor_failure(user["id"])
         database.log_rba_event(user["username"], "totp_fail", False,
                                 request.remote_addr)
         return render_template("mfa.html",
@@ -259,6 +366,10 @@ def mfa_fido2_start(session_id):
     if not mfa or _is_expired(mfa["expires_at"]):
         return jsonify({"error": "Session expired"}), 400
 
+    user = database.get_user_by_id(mfa["user_id"])
+    if database.is_user_locked(user["id"]):
+        return jsonify({"error": "account_locked"}), 429
+
     creds = database.get_fido2_credentials(mfa["user_id"])
     allow_creds = [{"id": _b64url_decode(c["cred_id"]),
                     "transports": json.loads(c["transports"])}
@@ -267,7 +378,7 @@ def mfa_fido2_start(session_id):
     options = generate_authentication_options(
         rp_id             = RP_ID,
         allow_credentials = allow_creds,
-        user_verification = UserVerificationRequirement.PREFERRED,
+        user_verification = UserVerificationRequirement.REQUIRED,   # §1.9
     )
     session[f"fido2_challenge_{session_id}"] = _b64url_encode(options.challenge)
     return Response(options_to_json(options), mimetype="application/json")
@@ -279,6 +390,10 @@ def mfa_fido2_finish(session_id):
     if not mfa or _is_expired(mfa["expires_at"]):
         return jsonify({"error": "Session expired"}), 400
 
+    user = database.get_user_by_id(mfa["user_id"])
+    if database.is_user_locked(user["id"]):
+        return jsonify({"error": "account_locked"}), 429
+
     challenge_b64 = session.get(f"fido2_challenge_{session_id}")
     if not challenge_b64:
         return jsonify({"error": "No FIDO2 challenge in session"}), 400
@@ -286,10 +401,10 @@ def mfa_fido2_finish(session_id):
     body    = request.get_json()
     cred_id = body.get("id", "")
 
-    # Normalise to base64url
     cred_id_norm = cred_id.replace("+", "-").replace("/", "_").rstrip("=")
     cred_row = database.get_fido2_credential_by_id(cred_id_norm)
     if not cred_row or cred_row["user_id"] != mfa["user_id"]:
+        database.record_factor_failure(user["id"])
         return jsonify({"error": "Credential not found"}), 401
 
     def b64url_to_bytes(s):
@@ -305,8 +420,10 @@ def mfa_fido2_finish(session_id):
             expected_origin       = ORIGIN,
             credential_public_key = b64url_to_bytes(cred_row["public_key"]),
             credential_current_sign_count = cred_row["sign_count"],
+            require_user_verification = True,   # §1.9
         )
     except Exception as e:
+        database.record_factor_failure(user["id"])
         return jsonify({"error": str(e)}), 401
 
     database.update_fido2_sign_count(cred_id_norm, verification.new_sign_count)
@@ -315,8 +432,9 @@ def mfa_fido2_finish(session_id):
 
 
 def _complete_auth(mfa, session_id):
-    """All factors passed — approve device code."""
+    """All factors passed — approve device code and reset failure counters."""
     database.approve_device_code(mfa["device_code"], mfa["user_id"])
+    database.reset_failed_attempts(mfa["user_id"])   # §1.10
     user = database.get_user_by_id(mfa["user_id"])
     database.log_rba_event(
         username     = user["username"],
@@ -328,7 +446,7 @@ def _complete_auth(mfa, session_id):
     return render_template("success.html", username=user["username"])
 
 
-# ── Token endpoint ─────────────────────────────────────────────────────────────
+# ── Token endpoint (§1.8 — short TTL, hashed at rest) ─────────────────────────
 
 @app.route("/oauth/token", methods=["POST"])
 def token():
@@ -354,7 +472,7 @@ def token():
     if row["status"] == "denied":
         return jsonify({"error": "access_denied"}), 400
 
-    # Issue access token
+    # Issue access token — stored as SHA-256 hash, never plaintext (§1.8).
     access_token = secrets.token_urlsafe(48)
     expires      = _expires_iso(TOKEN_TTL)
     database.create_access_token(access_token, row["user_id"],
@@ -369,11 +487,15 @@ def token():
     })
 
 
-# ── Userinfo endpoint ──────────────────────────────────────────────────────────
+# ── Userinfo endpoint (§1.8 — single-use) ─────────────────────────────────────
 
 @app.route("/oauth/userinfo", methods=["GET"])
 def userinfo():
-    """Called by SrvAuthn after token obtained — returns user + WG peer info."""
+    """
+    Called by SrvAuthn after token obtained — returns user info. The token
+    is marked used on first successful call; subsequent calls return 401
+    even within the TTL window (§1.8).
+    """
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
         return jsonify({"error": "unauthorized"}), 401
@@ -381,6 +503,14 @@ def userinfo():
     token_str = auth[7:]
     tok = database.get_access_token(token_str)
     if not tok or _is_expired(tok["expires_at"]):
+        return jsonify({"error": "invalid_token"}), 401
+
+    if tok["used_at"] is not None:
+        return jsonify({"error": "invalid_token"}), 401
+
+    # Mark used *before* returning the body — a concurrent retry will lose
+    # the UPDATE race and see used_at != NULL.
+    if not database.mark_token_used(token_str):
         return jsonify({"error": "invalid_token"}), 401
 
     user = database.get_user_by_id(tok["user_id"])

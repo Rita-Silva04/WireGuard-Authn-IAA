@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
-Phase 0 end-to-end integration test — fully automated.
+End-to-end integration test — fully automated.
+
+Covers the whole stack at its current state: as of Phase 1 this exercises
+server-generated WG keypair (§1.1), scrypt+HMAC password challenge-response
+(§1.6), single-use OAuth tokens (§1.8), race-safe IP leasing (§1.11), and the
+end-to-end VPN bring-up + ping.
 
 What this script does:
   1. Ensures the Multipass VM 'vpn-client' exists and is running
@@ -9,13 +14,16 @@ What this script does:
   4. Mounts the repo into the VM and installs dependencies
   5. Writes client/base.conf with the correct gateway address
   6. Runs userauthn.py inside the VM (via multipass exec)
-  7. Simultaneously completes the OAuth Device Flow programmatically
-     (password + TOTP — no browser needed)
+  7. Simultaneously completes the OAuth Device Flow programmatically:
+       - GET  /oauth/mfa/<sid>/password/challenge → {salt, nonce}
+       - scrypt(password, salt) → verifier; HMAC-SHA256(verifier, nonce) → proof
+       - POST /oauth/mfa/<sid>/password with proof
+       - POST /oauth/mfa/<sid>/totp with the current code
   8. Verifies wg0 is up on the client, the peer appears on the server,
      and ping 10.10.10.1 succeeds from inside the VM
 
 Usage:
-    python3 scripts/test_phase0.py
+    python3 scripts/test_e2e.py
 
 Prerequisites:
     - docker compose stack is already up (docker compose up -d)
@@ -23,6 +31,9 @@ Prerequisites:
     - multipass is installed (snap install multipass)
 """
 
+import base64
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -115,14 +126,16 @@ def reset_state():
         with open(conf_path, "w") as f:
             f.writelines(clean)
 
-    # Clear auth-related DB tables (keep users + credentials)
+    # Clear auth-related DB tables (keep users + credentials) and unlock
+    # any account that may have hit the failure threshold in a prior run.
     container_python(
         "import sqlite3\n"
         "conn = sqlite3.connect('/data/vpnauth.db')\n"
         "for t in ('wg_peers','oauth_tokens','device_codes','mfa_sessions','rba_events','rba_ip_history'):\n"
         "    conn.execute(f'DELETE FROM {t}')\n"
+        "conn.execute('UPDATE users SET failed_attempts=0, locked_until=0, last_failure_at=0')\n"
         "conn.commit()\n"
-        "print('DB auth tables cleared')"
+        "print('DB auth tables cleared, users unlocked')"
     )
     ok("State reset complete")
 
@@ -277,14 +290,35 @@ def complete_oauth(user_code, totp_secret, result):
 
         time.sleep(0.3)
 
-        # POST password
-        data = urllib.parse.urlencode({"password": PASSWORD}).encode()
+        # ── Password challenge-response (§1.6) ─────────────────────────────
+        # 1. Fetch (salt, nonce) from the challenge endpoint.
+        chresp = opener.open(
+            f"{IDP_URL}/oauth/mfa/{sid}/password/challenge", timeout=15
+        )
+        challenge = json.loads(chresp.read())
+        salt  = base64.b64decode(challenge["salt_b64"])
+        nonce = base64.b64decode(challenge["nonce_b64"])
+        sc    = challenge["scrypt"]
+
+        # 2. Derive verifier = scrypt(password, salt, …) — same params as server.
+        verifier = hashlib.scrypt(
+            PASSWORD.encode(), salt=salt,
+            n=sc["N"], r=sc["r"], p=sc["p"], dklen=sc["dkLen"],
+            maxmem=64 * 1024 * 1024,
+        )
+
+        # 3. proof = HMAC-SHA256(verifier, nonce)
+        proof = hmac.new(verifier, nonce, hashlib.sha256).digest()
+        proof_b64 = base64.b64encode(proof).decode()
+
+        # 4. POST only the proof — the raw password never leaves the client.
+        data = urllib.parse.urlencode({"proof": proof_b64}).encode()
         opener.open(
             urllib.request.Request(
                 f"{IDP_URL}/oauth/mfa/{sid}/password", data=data, method="POST"
-            ), timeout=15
+            ), timeout=30
         )
-        print(f"  [oauth] Password accepted")
+        print(f"  [oauth] Password proof accepted (scrypt+HMAC)")
 
         time.sleep(0.3)
 
@@ -399,7 +433,7 @@ def verify_tunnel():
 
 def main():
     print("\n" + "═"*60)
-    print("  Phase 0 — Full VM Integration Test")
+    print("  End-to-end VM Integration Test")
     print("═"*60)
 
     reset_state()
@@ -413,7 +447,7 @@ def main():
     verify_tunnel()
 
     print("\n" + "═"*60)
-    print("  ALL CHECKS PASSED — Phase 0 fully verified!")
+    print("  ALL CHECKS PASSED — stack verified end-to-end!")
     print("═"*60 + "\n")
 
 
