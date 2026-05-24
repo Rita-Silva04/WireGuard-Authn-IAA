@@ -107,17 +107,20 @@ def generate_env(force):
             ok(".env already configured — skipping")
             return
 
-    secret_key    = secrets.token_hex(32)
-    oauth_secret  = secrets.token_hex(32)
+    import base64 as _b64
+    secret_key      = secrets.token_hex(32)
+    oauth_secret    = secrets.token_hex(32)
+    iaa_master_key  = _b64.b64encode(secrets.token_bytes(32)).decode()
 
     template = read(".env.example")
     content  = template
     # Replace placeholder values
     content  = re.sub(r"SECRET_KEY=.*",          f"SECRET_KEY={secret_key}",   content)
     content  = re.sub(r"OAUTH_CLIENT_SECRET=.*", f"OAUTH_CLIENT_SECRET={oauth_secret}", content)
+    content  = re.sub(r"IAA_MASTER_KEY=.*",      f"IAA_MASTER_KEY={iaa_master_key}", content)
     # SERVER_PUBKEY will be filled in after WG key generation
     write(content, ".env")
-    ok(".env written with fresh secrets")
+    ok(".env written with fresh secrets (incl. IAA_MASTER_KEY for §4.6)")
 
 
 def generate_wg_keys(force):
@@ -273,12 +276,15 @@ def enrol_user(username, password, force):
     except Exception as e:
         fail(f"Generating TOTP failed: {e}")
 
-    # Read the secret from the DB and confirm it
+    # Read the secret from the DB and confirm it. Since §4.6 the column
+    # holds AES-256-GCM ciphertext; route through common.db so the master
+    # key in the container env decrypts it correctly.
     totp_secret = container_python(
-        f"import sqlite3; conn=sqlite3.connect('/data/vpnauth.db'); "
-        f"u=conn.execute(\"SELECT id FROM users WHERE username='{username}'\").fetchone(); "
-        f"r=conn.execute('SELECT secret FROM totp_secrets WHERE user_id=? AND confirmed=0',(u[0],)).fetchone(); "
-        f"print(r[0] if r else '')"
+        f"import sys; sys.path.insert(0,'/app'); "
+        f"from common import db as d; "
+        f"u=d.get_user('{username}'); "
+        f"row=d.get_totp_secret(u['id']) if u else None; "
+        f"print(row['secret'] if row else '')"
     )
     if not totp_secret:
         fail(f"Could not read pending TOTP secret for '{username}' from DB")

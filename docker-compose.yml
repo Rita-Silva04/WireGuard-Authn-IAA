@@ -25,6 +25,7 @@ services:
       - RP_ID=${RP_ID:-localhost}
       - ORIGIN=${ORIGIN:-http://localhost:8080}
       - OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET}
+      - IAA_MASTER_KEY=${IAA_MASTER_KEY}
       - IDP_PORT=8080
     volumes:
       - ./data:/data
@@ -48,6 +49,7 @@ services:
     environment:
       - SECRET_KEY=${SECRET_KEY}
       - OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET}
+      - IAA_MASTER_KEY=${IAA_MASTER_KEY}
       - DB_PATH=/data/vpnauth.db
       - RP_ID=${RP_ID:-localhost}
       - ORIGIN=${HELPDESK_ORIGIN:-http://localhost:8081}

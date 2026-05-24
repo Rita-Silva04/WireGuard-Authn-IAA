@@ -56,3 +56,29 @@ def require_env(name: str, env: dict | None = None) -> str:
 def require_envs(*names: str) -> dict[str, str]:
     """Validate several env vars at once and return a dict of their values."""
     return {n: require_env(n) for n in names}
+
+
+def require_master_key() -> str:
+    """
+    Validate IAA_MASTER_KEY at startup (§4.6). The variable holds a base64
+    string that must decode to exactly 32 bytes for AES-256-GCM. We refuse
+    to start if it is missing, a placeholder, or the wrong length.
+    """
+    import base64
+    raw = require_env("IAA_MASTER_KEY")
+    try:
+        key = base64.b64decode(raw, validate=True)
+    except Exception as e:
+        sys.stderr.write(
+            f"[config] FATAL: IAA_MASTER_KEY is not valid base64: {e}\n"
+        )
+        sys.exit(78)
+    if len(key) != 32:
+        sys.stderr.write(
+            f"[config] FATAL: IAA_MASTER_KEY must decode to 32 bytes "
+            f"(got {len(key)} bytes). Generate one with:\n"
+            f"  python3 -c \"import os, base64; "
+            f"print(base64.b64encode(os.urandom(32)).decode())\"\n"
+        )
+        sys.exit(78)
+    return raw

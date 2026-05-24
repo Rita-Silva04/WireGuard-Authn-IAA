@@ -11,7 +11,14 @@ internal_subnet     = 10.10.10.0/24
 idp_url             = http://localhost:8080
 oauth_client_id     = srvauthn
 oauth_client_secret = REPLACE_OR_THE_APP_WILL_REFUSE_TO_START
+
 # The Phase 3 Noise-IK tunnel uses the server's WG private key directly;
 # no TLS certificate is needed any more (§3.9).
+
 # Optional override for the proxy egress target (default localhost:8080).
 # proxy_target      = localhost:8080
+
+# Lease lifetime for issued WireGuard peers (§4.1). Default 24 h.
+lease_ttl_seconds   = 86400
+# How often the background sweeper checks for expired leases (§4.2).
+lease_sweeper_poll  = 60

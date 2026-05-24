@@ -213,15 +213,15 @@ def write_base_conf(gateway_ip):
 
 def get_totp_secret():
     step(5, "Fetch TOTP secret for automated OAuth")
+    # §4.6 — column is encrypted; route through common.db so the IdP's
+    # IAA_MASTER_KEY decrypts the seed.
     secret = container_python(
-        "import sqlite3\n"
-        "conn = sqlite3.connect('/data/vpnauth.db')\n"
-        "row = conn.execute("
-        "  \"SELECT ts.secret FROM totp_secrets ts\"\n"
-        "  \" JOIN users u ON u.id=ts.user_id\"\n"
-        "  \" WHERE u.username='alice' AND ts.confirmed=1\"\n"
-        ").fetchone()\n"
-        "print(row[0] if row else '')"
+        "import sys\n"
+        "sys.path.insert(0, '/app')\n"
+        "from common import db as d\n"
+        "u   = d.get_user('alice')\n"
+        "row = d.get_totp_secret(u['id']) if u else None\n"
+        "print(row['secret'] if row and row['confirmed'] else '')"
     )
     if not secret:
         fail("No confirmed TOTP secret for 'alice'. "

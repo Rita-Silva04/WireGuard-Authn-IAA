@@ -3,29 +3,35 @@ Central SQLite database for the VPN authentication stack.
 Tables:
   users            - core user accounts (+ failed_attempts, locked_until for §1.10)
   passwords        - scrypt verifier + salt for challenge-response (§1.6)
-  totp_secrets     - TOTP seeds
+  totp_secrets     - TOTP seeds, AES-256-GCM encrypted at rest (§4.6)
   fido2_credentials- WebAuthn/FIDO2 credentials
   oauth_codes      - short-lived authorization codes
   oauth_tokens     - issued access tokens (stored as SHA-256 hash, single-use, §1.8)
   rba_events       - authentication events for RBA
   rba_ip_history   - per-user IP history
-  wg_peers         - issued WireGuard peer configs
+  wg_peers         - issued WireGuard peer configs (+ expires_at for §4.1/4.2)
   mfa_sessions     - per-login MFA state (+ password_nonce, nonce_consumed for §1.6)
 """
 
+import base64
 import sqlite3
 import os
 import hashlib
 import ipaddress
 import threading
+import time
 from contextlib import contextmanager
+
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 DB_PATH = os.environ.get("DB_PATH", "/data/vpnauth.db")
 
 # Bump this whenever the schema changes so old databases are recreated.
 # v1 — Phase 1: scrypt password verifier, hashed/single-use tokens, lockout
-# columns on users, password nonce on mfa_sessions.
-SCHEMA_VERSION = 1
+#               columns on users, password nonce on mfa_sessions.
+# v2 — Phase 4: expires_at on wg_peers (§4.1); totp_secrets.secret renamed to
+#               secret_enc (AES-256-GCM ciphertext, §4.6).
+SCHEMA_VERSION = 2
 
 _local = threading.local()
 
@@ -141,9 +147,9 @@ def init_db():
 
         CREATE TABLE IF NOT EXISTS totp_secrets (
             user_id     INTEGER PRIMARY KEY REFERENCES users(id),
-            secret      TEXT NOT NULL,
+            secret_enc  BLOB    NOT NULL,
             confirmed   INTEGER DEFAULT 0,
-            updated_at  TEXT DEFAULT (datetime('now'))
+            updated_at  TEXT    DEFAULT (datetime('now'))
         );
 
         CREATE TABLE IF NOT EXISTS fido2_credentials (
@@ -220,6 +226,7 @@ def init_db():
             psk             TEXT NOT NULL,
             active          INTEGER DEFAULT 1,
             created_at      TEXT DEFAULT (datetime('now')),
+            expires_at      INTEGER NOT NULL,
             UNIQUE(user_id, interface)
         );
 
@@ -377,23 +384,96 @@ def has_password(user_id: int) -> bool:
     return get_password_verifier(user_id) is not None
 
 
-# ── TOTP helpers ───────────────────────────────────────────────────────────────
+# ── AES-256-GCM at-rest encryption for TOTP secrets (§4.6) ────────────────────
+
+_aesgcm_cache: AESGCM | None = None
+_aesgcm_lock = threading.Lock()
+
+
+def _load_master_key() -> bytes:
+    """
+    Return the 32-byte master key from IAA_MASTER_KEY. The variable holds a
+    base64-encoded 32-byte value (the natural shape that survives an
+    env-var round trip). The fail-closed startup check in common/config.py
+    guarantees this is non-empty and not a placeholder.
+    """
+    raw = os.environ.get("IAA_MASTER_KEY", "").strip()
+    if not raw:
+        raise RuntimeError(
+            "IAA_MASTER_KEY not set — refusing to read/write encrypted secrets"
+        )
+    try:
+        key = base64.b64decode(raw, validate=True)
+    except Exception as e:
+        raise RuntimeError(f"IAA_MASTER_KEY is not valid base64: {e}")
+    if len(key) != 32:
+        raise RuntimeError(
+            f"IAA_MASTER_KEY must decode to 32 bytes (got {len(key)})"
+        )
+    return key
+
+
+def _aesgcm() -> AESGCM:
+    """Lazy + cached AESGCM instance keyed on IAA_MASTER_KEY."""
+    global _aesgcm_cache
+    if _aesgcm_cache is None:
+        with _aesgcm_lock:
+            if _aesgcm_cache is None:
+                _aesgcm_cache = AESGCM(_load_master_key())
+    return _aesgcm_cache
+
+
+def _encrypt(plaintext: bytes) -> bytes:
+    """
+    Encrypt with AES-256-GCM. Returns ``nonce(12) || ciphertext || tag(16)`` so
+    the result is a single self-describing BLOB we can store directly.
+    """
+    if not isinstance(plaintext, (bytes, bytearray)):
+        plaintext = plaintext.encode()
+    nonce = os.urandom(12)
+    ct = _aesgcm().encrypt(nonce, bytes(plaintext), associated_data=None)
+    return nonce + ct
+
+
+def _decrypt(blob: bytes) -> bytes:
+    """Inverse of :func:`_encrypt`. Raises if the tag fails to verify."""
+    if not isinstance(blob, (bytes, bytearray)):
+        blob = bytes(blob)
+    if len(blob) < 12 + 16:
+        raise ValueError("encrypted blob too short")
+    nonce, ct = blob[:12], blob[12:]
+    return _aesgcm().decrypt(nonce, ct, associated_data=None)
+
+
+# ── TOTP helpers (secret encrypted at rest, §4.6) ─────────────────────────────
 
 def set_totp_secret(user_id: int, secret: str, confirmed: bool = False):
+    """Store the TOTP base32 seed as AES-256-GCM ciphertext."""
+    blob = _encrypt(secret.encode())
     with db() as conn:
         conn.execute("""
-            INSERT INTO totp_secrets (user_id, secret, confirmed) VALUES (?,?,?)
-            ON CONFLICT(user_id) DO UPDATE SET secret=excluded.secret,
+            INSERT INTO totp_secrets (user_id, secret_enc, confirmed)
+            VALUES (?,?,?)
+            ON CONFLICT(user_id) DO UPDATE SET secret_enc=excluded.secret_enc,
             confirmed=excluded.confirmed, updated_at=datetime('now')
-        """, (user_id, secret, 1 if confirmed else 0))
+        """, (user_id, blob, 1 if confirmed else 0))
 
 
 def get_totp_secret(user_id: int):
+    """
+    Return ``{"secret": "<base32>", "confirmed": 0|1}`` or ``None``. The
+    return shape stays a dict so callers that used ``row["secret"]`` and
+    ``row["confirmed"]`` keep working unmodified.
+    """
     with db() as conn:
         row = conn.execute(
-            "SELECT secret, confirmed FROM totp_secrets WHERE user_id=?", (user_id,)
+            "SELECT secret_enc, confirmed FROM totp_secrets WHERE user_id=?",
+            (user_id,)
         ).fetchone()
-        return row if row else None
+        if not row:
+            return None
+        plaintext = _decrypt(bytes(row["secret_enc"])).decode()
+        return {"secret": plaintext, "confirmed": row["confirmed"]}
 
 
 # ── FIDO2 helpers ──────────────────────────────────────────────────────────────
@@ -625,19 +705,26 @@ def upsert_ip_history(user_id: int, ip_address: str, asn: str = None):
 
 # ── WireGuard peer helpers ─────────────────────────────────────────────────────
 
+DEFAULT_LEASE_TTL_SECONDS = 24 * 60 * 60   # 24 h
+
+
 def upsert_wg_peer(user_id: int, interface: str, client_pubkey: str,
-                    client_ip: str, psk: str):
+                    client_ip: str, psk: str,
+                    lease_ttl_seconds: int = DEFAULT_LEASE_TTL_SECONDS):
+    expires_at = int(time.time()) + int(lease_ttl_seconds)
     with db() as conn:
         conn.execute("""
-            INSERT INTO wg_peers (user_id, interface, client_pubkey, client_ip, psk)
-            VALUES (?,?,?,?,?)
+            INSERT INTO wg_peers
+            (user_id, interface, client_pubkey, client_ip, psk, expires_at)
+            VALUES (?,?,?,?,?,?)
             ON CONFLICT(user_id, interface) DO UPDATE SET
             client_pubkey=excluded.client_pubkey,
             client_ip=excluded.client_ip,
             psk=excluded.psk,
             active=1,
-            created_at=datetime('now')
-        """, (user_id, interface, client_pubkey, client_ip, psk))
+            created_at=datetime('now'),
+            expires_at=excluded.expires_at
+        """, (user_id, interface, client_pubkey, client_ip, psk, expires_at))
 
 
 def get_wg_peer(user_id: int, interface: str):
@@ -654,8 +741,28 @@ def get_all_wg_peers(interface: str):
         ).fetchall()
 
 
+def get_expired_wg_peers(interface: str):
+    """Return active peers whose ``expires_at`` is in the past (§4.2)."""
+    now = int(time.time())
+    with db() as conn:
+        return conn.execute(
+            "SELECT * FROM wg_peers "
+            "WHERE interface=? AND active=1 AND expires_at < ?",
+            (interface, now),
+        ).fetchall()
+
+
+def deactivate_wg_peer(peer_id: int):
+    """Mark a peer inactive after the sweeper has removed it from wg0."""
+    with db() as conn:
+        conn.execute(
+            "UPDATE wg_peers SET active=0 WHERE id=?", (peer_id,)
+        )
+
+
 def lease_next_ip(interface: str, subnet: str, user_id: int,
-                  client_pubkey: str, psk: str) -> str:
+                  client_pubkey: str, psk: str,
+                  lease_ttl_seconds: int = DEFAULT_LEASE_TTL_SECONDS) -> str:
     """
     Atomically find the next free IP in `subnet` and claim it for this user.
 
@@ -670,6 +777,7 @@ def lease_next_ip(interface: str, subnet: str, user_id: int,
     """
     net = ipaddress.IPv4Network(subnet, strict=False)
     server_ip = str(list(net.hosts())[0])    # .1 is reserved for the server
+    expires_at = int(time.time()) + int(lease_ttl_seconds)
 
     conn = get_conn()
     try:
@@ -684,9 +792,9 @@ def lease_next_ip(interface: str, subnet: str, user_id: int,
         if existing:
             conn.execute(
                 "UPDATE wg_peers SET client_pubkey=?, psk=?, "
-                "created_at=datetime('now') "
+                "created_at=datetime('now'), expires_at=? "
                 "WHERE user_id=? AND interface=?",
-                (client_pubkey, psk, user_id, interface),
+                (client_pubkey, psk, expires_at, user_id, interface),
             )
             conn.commit()
             return existing["client_ip"]
@@ -711,9 +819,9 @@ def lease_next_ip(interface: str, subnet: str, user_id: int,
 
         conn.execute(
             "INSERT INTO wg_peers "
-            "(user_id, interface, client_pubkey, client_ip, psk) "
-            "VALUES (?,?,?,?,?)",
-            (user_id, interface, client_pubkey, chosen, psk),
+            "(user_id, interface, client_pubkey, client_ip, psk, expires_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (user_id, interface, client_pubkey, chosen, psk, expires_at),
         )
         conn.commit()
         return chosen

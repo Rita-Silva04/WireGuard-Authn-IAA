@@ -53,10 +53,15 @@ from common import db as database
 from common.config import require_env
 from server import tunnel as tunnel_mod
 from server import proxy as proxy_mod
+from server.leases import LeaseSweeper
 
 DEFAULT_PORT     = 9999
 POLL_INTERVAL    = 5    # seconds between IdP token polls
 POLL_TIMEOUT     = 600  # seconds max wait for user
+
+# Default lease lifetime in srvauthn.conf. The sweeper enforces it (§4.1/§4.2).
+DEFAULT_LEASE_TTL = 24 * 60 * 60        # 24 hours
+DEFAULT_SWEEPER_POLL = 60               # seconds
 
 
 def load_config(path: str) -> configparser.ConfigParser:
@@ -258,13 +263,16 @@ def handle_auth(session, hello: dict, cfg: configparser.ConfigParser):
         _send_err(session, "unknown_user")
         return
 
+    lease_ttl = cfg.getint("server", "lease_ttl_seconds",
+                            fallback=DEFAULT_LEASE_TTL)
     try:
         client_ip = database.lease_next_ip(
-            interface     = interface,
-            subnet        = subnet,
-            user_id       = user["id"],
-            client_pubkey = client_wg_pub,
-            psk           = client_psk,
+            interface         = interface,
+            subnet            = subnet,
+            user_id           = user["id"],
+            client_pubkey     = client_wg_pub,
+            psk               = client_psk,
+            lease_ttl_seconds = lease_ttl,
         )
     except database.NoFreeIPError:
         log.error(f"Subnet {subnet} exhausted while leasing for {username}")
@@ -344,6 +352,15 @@ def run_server(cfg: configparser.ConfigParser, port: int):
     database.init_db()
     database.ensure_default_client()
     _load_server_wg_private_key(cfg)
+
+    # §4.2 — start the lease sweeper. Poll interval defaults to 60 s; the
+    # sweeper itself enforces whatever lease_ttl_seconds the auth handler
+    # wrote into wg_peers.expires_at.
+    interface     = cfg.get("server", "wg_interface", fallback="wg0")
+    poll_interval = cfg.getint("server", "lease_sweeper_poll",
+                                fallback=DEFAULT_SWEEPER_POLL)
+    sweeper = LeaseSweeper(interface=interface, poll_interval=poll_interval)
+    sweeper.start()
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

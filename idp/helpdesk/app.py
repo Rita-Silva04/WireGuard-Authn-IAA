@@ -41,11 +41,12 @@ from webauthn.helpers.structs import (
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from common import db as database
-from common.config import require_env
+from common.config import require_env, require_master_key
 
-# §1.12 — refuse to start without real secrets.
+# §1.12 + §4.6 — refuse to start without real secrets.
 require_env("SECRET_KEY")
 require_env("OAUTH_CLIENT_SECRET")
+require_master_key()
 
 app = Flask(__name__)
 app.secret_key = os.environ["SECRET_KEY"]
