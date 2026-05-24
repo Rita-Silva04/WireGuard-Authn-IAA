@@ -21,10 +21,16 @@ import os
 import sys
 import json
 import hmac
+import logging
 import secrets
 import hashlib
 import base64
 from datetime import datetime, timezone, timedelta
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
+)
 
 from flask import (Flask, request, jsonify, render_template,
                    redirect, url_for, session, Response)
@@ -40,6 +46,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from common import db as database
 from common.config import require_env
 from idp.rba import compute_risk, risk_label
+from idp import pam_bridge
 
 # §1.12: refuse to start with missing/placeholder secrets.
 require_env("SECRET_KEY")
@@ -198,26 +205,43 @@ def device_verify():
         user_agent  = ua,
     )
 
+    # §2.3/2.7 — kick off the PAM thread; it will start asking for factors
+    # via the conversation function. The bridge runs `pam_authenticate` in
+    # a background thread and exposes pending prompts + final outcome here.
+    pam_bridge.start_authentication(
+        sid        = mfa_sid,
+        username   = username,
+        ip         = ip,
+        risk_score = rba["score_int"],
+    )
+
     return redirect(url_for("mfa_page", session_id=mfa_sid))
 
 
 # ── MFA orchestration ──────────────────────────────────────────────────────────
 
-def _mfa_next_factor(mfa_session):
-    """Return the next incomplete required factor, or None if all done."""
-    required = json.loads(mfa_session["required_factors"])
-    for factor in required:
-        if factor == "password" and not mfa_session["password_ok"]:
-            return "password"
-        if factor == "totp"     and not mfa_session["totp_ok"]:
-            return "totp"
-        if factor == "fido2"    and not mfa_session["fido2_ok"]:
-            return "fido2"
-    return None   # all done
+_PROMPT_TO_FACTOR = {
+    "FACTOR:password": "password",
+    "FACTOR:totp":     "totp",
+    "FACTOR:fido2":    "fido2",
+}
+
+
+def _factor_from_prompt(prompt: str | None) -> str | None:
+    if not prompt:
+        return None
+    # tolerate extra trailing whitespace from C string handling
+    return _PROMPT_TO_FACTOR.get(prompt.strip())
 
 
 @app.route("/oauth/mfa/<session_id>", methods=["GET"])
 def mfa_page(session_id):
+    """
+    Render whichever factor the PAM module is currently asking for. The
+    sequencing of factors lives entirely in the PAM module (§2.4/§2.6);
+    this handler only consumes the bridge's pending prompt and renders
+    the matching template.
+    """
     mfa = database.get_mfa_session(session_id)
     if not mfa or _is_expired(mfa["expires_at"]):
         return render_template("error.html", error="MFA session expired."), 400
@@ -226,11 +250,37 @@ def mfa_page(session_id):
 
     # §1.10 — lockout check at the top of every factor route.
     if database.is_user_locked(user["id"]):
+        # Make sure no PAM thread is still parked on a response.
+        pam_bridge.submit_factor_result(session_id, "FAIL")
         return _lockout_response(user, session_id, factor=None)
 
-    factor = _mfa_next_factor(mfa)
-    if factor is None:
+    # If PAM has already finished, route to success/failure terminal page.
+    final = pam_bridge.get_result(session_id)
+    if final is True:
         return _complete_auth(mfa, session_id)
+    if final is False:
+        return render_template("error.html",
+                               error="Authentication failed."), 401
+
+    # Otherwise block briefly waiting for the next PAM prompt.
+    prompt = pam_bridge.wait_for_prompt(session_id, timeout=5.0)
+    if prompt is None:
+        # PAM may have just finished between our two checks above; re-check.
+        final = pam_bridge.get_result(session_id)
+        if final is True:
+            return _complete_auth(mfa, session_id)
+        if final is False:
+            return render_template("error.html",
+                                   error="Authentication failed."), 401
+        # Still pending — ask the browser to refresh.
+        return render_template("error.html",
+                               error="Authentication is still in progress. "
+                                     "Please reload the page."), 503
+
+    factor = _factor_from_prompt(prompt[0])
+    if factor is None:
+        return render_template("error.html",
+                               error=f"Unknown PAM prompt: {prompt[0]!r}"), 500
 
     required = json.loads(mfa["required_factors"])
     return render_template("mfa.html",
@@ -311,6 +361,10 @@ def mfa_password(session_id):
         database.record_factor_failure(user["id"])
         database.log_rba_event(user["username"], "password_fail", False,
                                 request.remote_addr)
+        # If this failure triggered the lockout, tear down the PAM thread so
+        # it doesn't sit blocked on response_event for FACTOR_TIMEOUT.
+        if database.is_user_locked(user["id"]):
+            pam_bridge.submit_factor_result(session_id, "FAIL")
         return render_template("mfa.html",
                                session_id=session_id,
                                factor="password",
@@ -321,6 +375,7 @@ def mfa_password(session_id):
                                fido2_ok=mfa["fido2_ok"])
 
     database.update_mfa_session(session_id, password_ok=1)
+    pam_bridge.submit_factor_result(session_id, "OK")
     return redirect(url_for("mfa_page", session_id=session_id))
 
 
@@ -347,6 +402,8 @@ def mfa_totp(session_id):
         database.record_factor_failure(user["id"])
         database.log_rba_event(user["username"], "totp_fail", False,
                                 request.remote_addr)
+        if database.is_user_locked(user["id"]):
+            pam_bridge.submit_factor_result(session_id, "FAIL")
         return render_template("mfa.html",
                                session_id=session_id,
                                factor="totp",
@@ -357,6 +414,7 @@ def mfa_totp(session_id):
                                fido2_ok=mfa["fido2_ok"])
 
     database.update_mfa_session(session_id, totp_ok=1)
+    pam_bridge.submit_factor_result(session_id, "OK")
     return redirect(url_for("mfa_page", session_id=session_id))
 
 
@@ -428,6 +486,7 @@ def mfa_fido2_finish(session_id):
 
     database.update_fido2_sign_count(cred_id_norm, verification.new_sign_count)
     database.update_mfa_session(session_id, fido2_ok=1)
+    pam_bridge.submit_factor_result(session_id, "OK")
     return jsonify({"status": "ok"})
 
 
@@ -435,6 +494,7 @@ def _complete_auth(mfa, session_id):
     """All factors passed — approve device code and reset failure counters."""
     database.approve_device_code(mfa["device_code"], mfa["user_id"])
     database.reset_failed_attempts(mfa["user_id"])   # §1.10
+    pam_bridge.cleanup(session_id)
     user = database.get_user_by_id(mfa["user_id"])
     database.log_rba_event(
         username     = user["username"],
@@ -538,8 +598,3 @@ if __name__ == "__main__":
     database.ensure_default_client()
     app.run(host="0.0.0.0", port=int(os.environ.get("IDP_PORT", 8080)),
             debug=False)
-
-
-# ── PAM blueprint ──────────────────────────────────────────────────────────────
-from idp.pam_routes import pam_bp
-app.register_blueprint(pam_bp)

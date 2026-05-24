@@ -1,7 +1,7 @@
 CC      = gcc
 CFLAGS  = -Wall -Wextra -fPIC -shared -O2
-LDFLAGS = -lpam -lcurl
-TARGET  = /lib/security/pam_vpnmfa.so
+LDFLAGS = -lpam
+TARGET  ?= /lib/security/pam_vpnmfa.so
 SRC     = src/pam_vpnmfa.c
 
 all: $(TARGET)

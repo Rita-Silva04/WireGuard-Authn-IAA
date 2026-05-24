@@ -1,5 +1,4 @@
 flask>=3.0
-bcrypt
 pyotp
 qrcode[pil]
 pillow

@@ -35,9 +35,12 @@ FACTOR_PASSWORD = "password"
 FACTOR_TOTP     = "totp"
 FACTOR_FIDO2    = "fido2"
 
-# Thresholds
+# Thresholds — kept on the float 0.0–1.0 axis for the existing math but
+# also exposed on the 0–100 axis for PAM (the C module reads IAA_RISK_SCORE
+# as a small integer per §2.7).
 THRESHOLD_LOW  = 0.30   # below → password only
 THRESHOLD_MED  = 0.60   # below → password + TOTP
+SCORE_SCALE    = 100    # internal float 0.0–1.0 → wire integer 0–100
 
 
 def _is_private_or_loopback(ip: str) -> bool:
@@ -144,12 +147,13 @@ def compute_risk(username: str, ip_address: str, user_agent: str = "") -> dict:
     database.upsert_ip_history(user_id, ip_address, asn=None)
 
     return {
-        "score":   round(score, 3),
-        "level":   risk_label(score),
-        "factors": None if missing else required,
-        "reasons": reasons,
-        "missing": missing,
-        "asn":     "",
+        "score":     round(score, 3),
+        "score_int": int(round(score * SCORE_SCALE)),  # §2.7 — for PAM
+        "level":     risk_label(score),
+        "factors":   None if missing else required,
+        "reasons":   reasons,
+        "missing":   missing,
+        "asn":       "",
     }
 
 

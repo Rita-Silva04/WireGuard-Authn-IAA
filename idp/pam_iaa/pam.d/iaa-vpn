@@ -1,4 +1,11 @@
 #%PAM-1.0
-# /etc/pam.d/vpnauth
-auth    required    pam_vpnmfa.so   idp_url=http://localhost:8080
+# PAM service profile for the IAA-VPN IdP.
+#
+# pam_vpnmfa.so is the IAA orchestrator (idp/pam_iaa/src/pam_vpnmfa.c).
+# It reads the user's risk score from the PAM env var IAA_RISK_SCORE (set by
+# idp/pam_bridge.py), decides which factors to require, and asks the bridge
+# for each one via the conversation function. No HTTP, no curl, no arguments
+# needed — see STEPS.md §2.4 and §2.5.
+
+auth    required    pam_vpnmfa.so
 account required    pam_permit.so
