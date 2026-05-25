@@ -176,6 +176,24 @@ def generate_srvauthn_conf(pubkey, force):
     ok("server/srvauthn.conf written")
 
 
+def generate_base_conf(pubkey, force):
+    step("4b", "Client base config (client/base.conf)")
+
+    if exists("client", "base.conf") and not force:
+        ok("client/base.conf already exists — skipping")
+        return
+
+    content = f"""[server]
+public_key  = {pubkey}
+address     = host.docker.internal
+port        = 51820
+auth_port   = 9999
+allowed_ips = 10.10.10.0/24
+"""
+    write(content, "client", "base.conf")
+    ok("client/base.conf written")
+
+
 def start_stack(force):
     step(5, "Build and start Docker stack")
 
@@ -336,6 +354,7 @@ def main():
     generate_env(args.force)
     pubkey = generate_wg_keys(args.force)
     generate_srvauthn_conf(pubkey, args.force)
+    generate_base_conf(pubkey, args.force)
     start_stack(args.force)
     enrol_user(args.username if hasattr(args, "username") else args.user,
                args.password, args.force)
