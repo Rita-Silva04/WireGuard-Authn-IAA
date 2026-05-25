@@ -35,6 +35,8 @@ from webauthn import (
 )
 from webauthn.helpers.structs import (
     AuthenticatorSelectionCriteria,
+    AuthenticatorTransport,
+    PublicKeyCredentialDescriptor,
     UserVerificationRequirement,
     ResidentKeyRequirement,
 )
@@ -72,6 +74,19 @@ def _b64url_decode(s: str) -> bytes:
     s = s.replace("-", "+").replace("_", "/")
     s += "=" * (-len(s) % 4)
     return base64.b64decode(s)
+
+
+def _credential_descriptor(cred_id: str, transports_json: str):
+    transports = []
+    for t in json.loads(transports_json or "[]"):
+        try:
+            transports.append(AuthenticatorTransport(t))
+        except ValueError:
+            pass
+    return PublicKeyCredentialDescriptor(
+        id=_b64url_decode(cred_id),
+        transports=transports or None,
+    )
 
 
 def _derive_password_verifier(password: str, salt: bytes) -> bytes:
@@ -204,9 +219,10 @@ def fido2_register_start(username):
         return jsonify({"error": "User not found"}), 404
 
     existing = database.get_fido2_credentials(user["id"])
-    exclude  = [{"id": _b64url_decode(c["cred_id"]),
-                 "transports": json.loads(c["transports"])}
-                for c in existing]
+    exclude = [
+        _credential_descriptor(c["cred_id"], c["transports"])
+        for c in existing
+    ]
 
     options = generate_registration_options(
         rp_id          = RP_ID,

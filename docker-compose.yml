@@ -84,3 +84,36 @@ services:
     depends_on:
       - idp
     restart: unless-stopped
+
+  # Optional Docker client for single-machine demos
+  # Start with:
+  #   docker compose --profile client up -d client
+  #
+  # This container is the simulated VPN client host. It has its own network
+  # namespace and can create its own wg0 without colliding with the server wg0
+  # that lives on the host.
+  client:
+    profiles:
+      - client
+    build:
+      context: .
+      dockerfile: client/Dockerfile
+    container_name: vpn-client
+    environment:
+      - SERVER_PUBKEY=${SERVER_PUBKEY}
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "18080:18080"
+    stdin_open: true
+    tty: true
+    command: ["sleep", "infinity"]

@@ -147,6 +147,44 @@ factors verify.
 
 ---
 
+## Docker client fallback
+
+For quick testing without a VM, you can run the client in Docker on the host. The flow is the same as above, but instead of `python3 client/userauthn.py` use the optional client profile:
+
+```bash
+docker compose --profile client up -d --build client
+docker compose exec client bash
+```
+
+Inside the `vpn-client` shell, create a Docker-specific base config:
+
+```bash
+cat > /tmp/base.conf <<EOF
+[server]
+public_key  = ${SERVER_PUBKEY}
+address     = host.docker.internal
+port        = 51820
+auth_port   = 9999
+allowed_ips = 10.10.10.0/24
+EOF
+```
+
+Then run the client:
+
+```bash
+python3 -u client/userauthn.py \
+  --interface wg0 \
+  --username alice \
+  --config /tmp/base.conf \
+  --proxy-host 0.0.0.0
+```
+
+Open the printed URL from the host browser. The browser reaches
+`127.0.0.1:18080`, Docker forwards it into the client container, and the
+client proxy carries the HTTP flow through the authenticated Noise tunnel.
+
+---
+
 ## Common pitfalls
 
 - **"docker compose up failed"** — almost always either (a) port 8080 is
@@ -174,9 +212,9 @@ SERVER_PUBKEY=<32-byte base64 — the gateway's WG public key>
 SECRET_KEY=<64 hex chars — Flask session key>
 OAUTH_CLIENT_SECRET=<64 hex chars — SrvAuthn ↔ IdP shared secret>
 IAA_MASTER_KEY=<32-byte base64 — AES-256-GCM key for TOTP at rest>
-RP_ID=127.0.0.1
-ORIGIN=http://127.0.0.1:18080
-HELPDESK_ORIGIN=http://127.0.0.1:8081
+RP_ID=localhost
+ORIGIN=http://localhost:18080
+HELPDESK_ORIGIN=http://localhost:8081
 ```
 
 All values are random per machine. Never commit `.env` (it's gitignored).

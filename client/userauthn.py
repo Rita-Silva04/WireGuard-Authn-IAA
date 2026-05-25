@@ -98,7 +98,9 @@ def recv_json(session) -> dict:
 
 def apply_wireguard_interface(interface: str, private_key: str, client_ip: str,
                               server_pubkey: str, server_address: str,
-                              server_port: int, psk: str, dns: str = "1.1.1.1"):
+                              server_port: int, psk: str,
+                              allowed_ips: str = "10.10.10.0/24",
+                              dns: str = "1.1.1.1"):
     config = f"""[Interface]
 PrivateKey = {private_key}
 Address = {client_ip}/24
@@ -108,7 +110,7 @@ DNS = {dns}
 PublicKey = {server_pubkey}
 PresharedKey = {psk}
 Endpoint = {server_address}:{server_port}
-AllowedIPs = 0.0.0.0/0
+AllowedIPs = {allowed_ips}
 PersistentKeepalive = 25
 """
     conf_path = f"/etc/wireguard/{interface}.conf"
@@ -148,6 +150,10 @@ def main():
     parser.add_argument("--username",  required=True,  help="Your username")
     parser.add_argument("--config",    required=True,  help="Base config file path")
     parser.add_argument("--port",      type=int,       help="Override SrvAuthn tunnel port")
+    parser.add_argument("--proxy-host", default="127.0.0.1",
+                        help="Local HTTP proxy bind address (default 127.0.0.1). "
+                             "Use 0.0.0.0 inside a Docker client container "
+                             "when publishing the port to the host.")
     parser.add_argument("--proxy-port", type=int, default=18080,
                         help="Local HTTP proxy port (default 18080). "
                              "Set to 0 to disable the proxy.")
@@ -164,6 +170,7 @@ def main():
     srv_wg_port  = cfg.getint("server", "port",      fallback=51820)
     auth_port    = args.port or cfg.getint("server", "auth_port", fallback=9999)
     server_pubkey= cfg.get("server", "public_key",   fallback="")
+    allowed_ips  = cfg.get("server", "allowed_ips",  fallback="10.10.10.0/24")
 
     if not is_valid_wg_key(server_pubkey):
         log.error("base.conf:public_key is not a valid 32-byte base64 key")
@@ -180,13 +187,13 @@ def main():
     if args.proxy_port:
         try:
             proxy_server = proxy_mod.start(
-                listen_host  = "127.0.0.1",
+                listen_host  = args.proxy_host,
                 listen_port  = args.proxy_port,
                 srv_address  = srv_address,
                 srv_auth_port= auth_port,
                 server_pubkey= server_pubkey,
             )
-            log.info(f"Local proxy listening on 127.0.0.1:{args.proxy_port} "
+            log.info(f"Local proxy listening on {args.proxy_host}:{args.proxy_port} "
                      f"→ tunnel to {srv_address}:{auth_port}")
         except Exception as e:
             log.warning(f"Could not start local proxy on :{args.proxy_port}: {e}. "
@@ -275,6 +282,7 @@ def main():
             server_address= srv_address,
             server_port   = srv_wg_port,
             psk           = psk,
+            allowed_ips   = allowed_ips,
         )
 
         if ok:

@@ -118,6 +118,9 @@ def generate_env(force):
     content  = re.sub(r"SECRET_KEY=.*",          f"SECRET_KEY={secret_key}",   content)
     content  = re.sub(r"OAUTH_CLIENT_SECRET=.*", f"OAUTH_CLIENT_SECRET={oauth_secret}", content)
     content  = re.sub(r"IAA_MASTER_KEY=.*",      f"IAA_MASTER_KEY={iaa_master_key}", content)
+    content  = re.sub(r"RP_ID=.*",               "RP_ID=localhost", content)
+    content  = re.sub(r"ORIGIN=.*",              "ORIGIN=http://localhost:18080", content)
+    content  = re.sub(r"HELPDESK_ORIGIN=.*",     "HELPDESK_ORIGIN=http://localhost:8081", content)
     # SERVER_PUBKEY will be filled in after WG key generation
     write(content, ".env")
     ok(".env written with fresh secrets (incl. IAA_MASTER_KEY for §4.6)")

@@ -28,17 +28,48 @@
     return new TextEncoder().encode(String(s));
   }
 
-  // PBKDF2-HMAC-SHA256(password, salt, iterations=1, dkLen)
-  async function pbkdf2(password, salt, dkLen) {
+  async function hmacSha256(keyBytes, dataBytes) {
     const key = await SUBTLE.importKey(
-      "raw", toBytes(password),
-      { name: "PBKDF2" }, false, ["deriveBits"]
+      "raw", keyBytes,
+      { name: "HMAC", hash: "SHA-256" },
+      false, ["sign"]
     );
-    const bits = await SUBTLE.deriveBits(
-      { name: "PBKDF2", salt, iterations: 1, hash: "SHA-256" },
-      key, dkLen * 8
-    );
-    return new Uint8Array(bits);
+    const sig = await SUBTLE.sign("HMAC", key, dataBytes);
+    return new Uint8Array(sig);
+  }
+
+  function u32be(n) {
+    return new Uint8Array([
+      (n >>> 24) & 0xff,
+      (n >>> 16) & 0xff,
+      (n >>>  8) & 0xff,
+       n         & 0xff,
+    ]);
+  }
+
+  function concatBytes(a, b) {
+    const out = new Uint8Array(a.length + b.length);
+    out.set(a, 0);
+    out.set(b, a.length);
+    return out;
+  }
+
+  // PBKDF2-HMAC-SHA256(password, salt, iterations=1, dkLen).
+  // We implement the one-iteration case directly instead of calling
+  // subtle.deriveBits("PBKDF2"), because some browsers return a generic
+  // OperationError for iterations=1 even though it is valid for scrypt.
+  async function pbkdf2(password, salt, dkLen) {
+    const keyBytes = toBytes(password);
+    const out = new Uint8Array(dkLen);
+    let written = 0;
+    let block = 1;
+    while (written < dkLen) {
+      const u = await hmacSha256(keyBytes, concatBytes(salt, u32be(block)));
+      out.set(u.subarray(0, Math.min(u.length, dkLen - written)), written);
+      written += u.length;
+      block += 1;
+    }
+    return out;
   }
 
   // 32-bit add and rotate-left

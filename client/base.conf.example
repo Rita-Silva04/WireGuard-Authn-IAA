@@ -8,3 +8,6 @@ address     = YOUR_SERVER_IP
 port        = 51820
 # SrvAuthn Noise-IK TCP port
 auth_port   = 9999
+# For a Docker client, keep this to the VPN subnet. Use 0.0.0.0/0 only
+# for a full default-route tunnel.
+allowed_ips = 10.10.10.0/24
