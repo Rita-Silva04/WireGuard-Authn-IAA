@@ -13,7 +13,7 @@ Three levels, smallest to largest blast radius:
     python3 scripts/teardown.py --reset
         Stop the containers AND delete every artifact `setup.py` and
         `test_e2e.py` regenerate from scratch: .env, srvauthn.conf,
-        client/base.conf, the SQLite DB, the WG server keypair, and the
+        client/base.conf, the data directory, the WG server keypair, and the
         local Docker images. The next `setup.py` run is effectively a
         clean install.
 
@@ -106,9 +106,9 @@ def wipe_generated_files():
     ):
         rm_path(p)
 
-    # SQLite DB (the IdP / helpdesk recreate it on next startup)
-    for db_part in ("data/vpnauth.db", "data/vpnauth.db-wal", "data/vpnauth.db-shm"):
-        rm_path(db_part)
+    # Runtime state (SQLite DB, WAL/SHM files, optional local GeoIP DBs).
+    # setup.py recreates data/ before Docker bind-mounts it again.
+    rm_path("data")
 
 
 def remove_vm(assume_yes: bool):
@@ -158,7 +158,7 @@ def main():
 
     if args.reset:
         warn("--reset will delete .env, srvauthn.conf, base.conf, the "
-             "WireGuard server keypair, the SQLite DB and local Docker images.")
+             "WireGuard server keypair, data/ and local Docker images.")
         if not confirm("Proceed with full reset?", args.yes):
             print("\nAborted.\n")
             sys.exit(0)

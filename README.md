@@ -335,13 +335,15 @@ matching the spec's "least robust → most robust" ordering.
 
 ## 7. Risk-based authentication
 
-`idp/rba.py:compute_risk(username, ip, user_agent)` aggregates four signals,
-all from data already in the local database — no external HTTP calls:
+`idp/rba.py:compute_risk(username, ip, user_agent)` aggregates five signals.
+ASN is resolved from a local MMDB database when one is mounted; no external
+HTTP calls are made during login.
 
 | Signal                              | Penalty                | Where it comes from              |
 |---                                  |---                     |---                               |
 | First-ever login for this user      | +0.30                  | `rba_ip_history` is empty        |
 | New IP for an existing user         | +0.20                  | IP not in `rba_ip_history`       |
+| New ASN for an existing user        | +0.15                  | local MMDB ASN lookup + `rba_ip_history.asn` |
 | Recent failures (last 30 min)       | +0.10 each, max +0.40  | `rba_events`                     |
 | Unusual hour (00:00–06:00 UTC)      | +0.20                  | `datetime.now().hour`            |
 
@@ -534,17 +536,11 @@ common pitfalls — is in [`RUN.md`](RUN.md).
 
 ## 13. Features not implemented
 
-- **RBA — "Autonomous Service" indicator.** The project specification lists
-  *"same/different Autonomous Service"* as one of the example RBA signals
-  to consider, alongside IP, recent failures, and time of day. The first
-  and last three are implemented (see §7); the Autonomous-Service signal
-  is not. Resolving it would require either bundling a GeoIP/AS database
-  (~50 MB of binary data) or querying an external service on every login
-  (privacy leak + external dependency for a system whose whole point is a
-  closed trust model). The remaining three indicators give the RBA engine
-  enough discrimination to drive the L1/L2/L3 tiering meaningfully.
+No mandatory project feature is intentionally left unimplemented. RBA ASN
+support is optional at runtime: if no local MMDB ASN database is mounted, the
+engine disables only the ASN signal and continues using IP history, recent
+failures, and time-of-day.
 
-Everything else mentioned in the project specification is implemented.
 A line-by-line walkthrough is in [`AUDIT.md`](AUDIT.md).
 
 ---
@@ -572,6 +568,7 @@ External libraries used (acknowledged here per the spec's plagiarism rules):
 | `pyotp`                   | IdP, helpdesk                            | TOTP generation / verification (RFC 6238)                   |
 | `webauthn` (v2+)          | IdP, helpdesk                            | WebAuthn / FIDO2 verification                               |
 | `qrcode[pil]`, `pillow`   | helpdesk                                 | QR codes for TOTP enrolment                                 |
+| `geoip2` / `maxminddb`    | IdP                                      | Local MMDB ASN lookup for RBA                                |
 | `cryptography`            | IdP, helpdesk, SrvAuthn, common          | X25519, ChaCha20-Poly1305, AES-256-GCM, BLAKE2s, PBKDF2     |
 
 System tools invoked by subprocess: `wg`, `wg-quick`, `wg genkey`,

@@ -26,9 +26,11 @@ services:
       - ORIGIN=${ORIGIN:-http://localhost:8080}
       - OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET}
       - IAA_MASTER_KEY=${IAA_MASTER_KEY}
+      - GEOIP_ASN_DB_PATH=${GEOIP_ASN_DB_PATH:-/geoip/dbip-asn-lite-2026-05.mmdb}
       - IDP_PORT=8080
     volumes:
       - ./data:/data
+      - ./Geo-Localization_databases:/geoip:ro
       - ./idp:/app/idp
       - ./common:/app/common
     ports:

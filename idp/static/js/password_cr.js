@@ -42,7 +42,14 @@
       const sessionId = form.dataset.sessionId;
       const chResp = await fetch(`/oauth/mfa/${sessionId}/password/challenge`,
                                  { credentials: "same-origin" });
-      if (!chResp.ok) throw new Error(`challenge HTTP ${chResp.status}`);
+      if (!chResp.ok) {
+        let message = "Authentication is temporarily unavailable. Try again later.";
+        try {
+          const data = await chResp.json();
+          if (data.message) message = data.message;
+        } catch (_) {}
+        throw new Error(message);
+      }
       const challenge = await chResp.json();
 
       const salt  = b64decode(challenge.salt_b64);
@@ -75,7 +82,7 @@
       submission.submit();
     } catch (err) {
       console.error(err);
-      status.textContent = "❌ " + (err.message || err);
+      status.textContent = `❌ ${err.message}`;
       button.disabled = false;
     }
     return false;

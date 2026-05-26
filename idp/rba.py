@@ -3,12 +3,13 @@ Risk-Based Authentication (RBA) Engine.
 
 Computes a risk score and decides which MFA factors are required.
 
-§1.5 — ASN/country signals removed. The previous implementation called
-ip-api.com synchronously, which introduced an external dependency, leaked the
-client IP, and broke offline demos. Justification: see JUSTIFICATIONS.md §2.
+§1.5 — ASN is resolved only from a local GeoIP database. No external API is
+called during login, so the demo remains offline and the client IP is not
+shared with third parties.
 
 Risk indicators (current set):
   - New IP address for this user          (+0.20)
+  - New ASN for this user                 (+0.15)
   - Recent authentication failures        (+0.10 per failure, max +0.40)
   - Unusual time of day                   (+0.20)
   - First ever login (no history)         (+0.30)
@@ -24,6 +25,7 @@ page directing the user to contact the helpdesk.
 """
 
 import ipaddress
+import os
 from datetime import datetime, timezone
 
 import sys, os
@@ -41,6 +43,7 @@ FACTOR_FIDO2    = "fido2"
 THRESHOLD_LOW  = 0.30   # below → password only
 THRESHOLD_MED  = 0.60   # below → password + TOTP
 SCORE_SCALE    = 100    # internal float 0.0–1.0 → wire integer 0–100
+ASN_DB_PATH    = os.environ.get("GEOIP_ASN_DB_PATH", "/geoip/dbip-asn-lite-2026-05.mmdb")
 
 
 def _is_private_or_loopback(ip: str) -> bool:
@@ -49,6 +52,41 @@ def _is_private_or_loopback(ip: str) -> bool:
         return addr.is_private or addr.is_loopback
     except ValueError:
         return False
+
+
+def _lookup_asn(ip: str) -> str:
+    """Resolve an IP to AS number/name using a local GeoIP ASN database."""
+    if _is_private_or_loopback(ip) or not ASN_DB_PATH or not os.path.exists(ASN_DB_PATH):
+        return ""
+    try:
+        import maxminddb
+        from geoip2.errors import AddressNotFoundError
+    except Exception:
+        return ""
+
+    try:
+        with maxminddb.open_database(ASN_DB_PATH) as reader:
+            result = reader.get(ip) or {}
+    except (AddressNotFoundError, OSError, ValueError):
+        return ""
+
+    number = (
+        result.get("autonomous_system_number")
+        or result.get("asn")
+        or result.get("as_number")
+    )
+    org = (
+        result.get("autonomous_system_organization")
+        or result.get("as_name")
+        or result.get("organization")
+        or result.get("isp")
+        or ""
+    )
+    if number and org:
+        return f"AS{number} {org}"
+    if number:
+        return f"AS{number}"
+    return org
 
 
 def _is_unusual_hour(hour: int) -> bool:
@@ -110,6 +148,7 @@ def compute_risk(username: str, ip_address: str, user_agent: str = "") -> dict:
         }
 
     user_id = user["id"]
+    asn = _lookup_asn(ip_address)
 
     # ── IP history ────────────────────────────────────────────────────────────
     history = database.get_ip_history(user_id)
@@ -121,6 +160,11 @@ def compute_risk(username: str, ip_address: str, user_agent: str = "") -> dict:
         if ip_address not in known_ips:
             score += 0.20
             reasons.append(f"New IP address: {ip_address}")
+
+        known_asns = {row["asn"] for row in history if row["asn"]}
+        if asn and known_asns and asn not in known_asns:
+            score += 0.15
+            reasons.append(f"New ASN: {asn}")
 
     # ── Recent failures ───────────────────────────────────────────────────────
     failures = database.get_recent_failures(username, minutes=30)
@@ -143,9 +187,6 @@ def compute_risk(username: str, ip_address: str, user_agent: str = "") -> dict:
     required = _required_factors_for(score)
     missing  = _missing_factors(user_id, required)
 
-    # ── Update IP history (no ASN under §1.5) ─────────────────────────────────
-    database.upsert_ip_history(user_id, ip_address, asn=None)
-
     return {
         "score":     round(score, 3),
         "score_int": int(round(score * SCORE_SCALE)),  # §2.7 — for PAM
@@ -153,7 +194,7 @@ def compute_risk(username: str, ip_address: str, user_agent: str = "") -> dict:
         "factors":   None if missing else required,
         "reasons":   reasons,
         "missing":   missing,
-        "asn":       "",
+        "asn":       asn,
     }
 
 

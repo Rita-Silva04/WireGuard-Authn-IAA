@@ -13,16 +13,9 @@
 ## 1. Bottom line
 
 The codebase satisfies every **mandatory** directive of the project
-specification. The only requirement-level gaps are:
+specification. The only requirement-level gap is:
 
-1. **One RBA example signal is not implemented.** The spec lists
-   *"same/different Autonomous Service"* as one of the indicators to
-   *"consider using"* for RBA (§3). The spec's language frames the list
-   as illustrative (it ends with "etc."), and the project does implement
-   the other three indicators it names. This is documented in
-   `README.md` §13.
-
-2. **`README.md` author block is unfilled.** The spec (§5) mandates the
+1. **`README.md` author block is unfilled.** The spec (§5) mandates the
    README identify *"the authors (number and name) and their percentual
    contribution to the overall project work"*. The file exists with a
    placeholder table; the three rows must be filled in before
@@ -238,22 +231,18 @@ Verdict: **✓**
 > same/different Autonomous Service), authentication failures, ordinary
 > time of the day for VPN creation, etc."*
 
-The verb is *"consider using"* and the list ends with *"etc."* —
-illustrative, not exhaustive. The implementation covers three of the
-four explicitly named indicators:
+The implementation covers all four explicitly named indicators:
 
 | Indicator                                | Implemented? | Code                            |
 |---                                       |---           |---                              |
 | IP same/different                        | ✓            | `idp/rba.py` — `rba_ip_history` membership; first-ever-login bonus |
-| Same/different Autonomous Service        | ✗            | not implemented                 |
+| Same/different Autonomous Service        | ✓            | `idp/rba.py` — local MMDB ASN lookup + `rba_ip_history.asn` |
 | Authentication failures                  | ✓            | `idp/rba.py` — `get_recent_failures(username, minutes=30)` |
 | Ordinary time of day                     | ✓            | `idp/rba.py:_is_unusual_hour` — 00:00–06:00 UTC penalty |
 
-Verdict: **±** — three of four named indicators implemented;
-"Autonomous Service" not. The spec's list is illustrative
-(*"consider using ... etc."*) so this is a soft deviation, but it is
-the one place where named text in the spec is not reflected in the
-code. Documented in `README.md` §13.
+Verdict: **✓** — the ASN signal is optional at runtime because it depends
+on mounting a local MMDB database. If the file is absent, only that signal
+is skipped; no external IP reputation service is contacted.
 
 ### 2.4 §4 — Implementation details
 
@@ -425,7 +414,7 @@ Verdict: **✓**
 | Justifications for each implemented feature | ✓ (interleaved throughout sections 4–10) |
 | Authors — number and name | **✗** placeholder table waiting for fill-in (§12) |
 | Per-author contribution percentages | **✗** same placeholder |
-| Features not implemented or partially implemented | ✓ (§13 — Autonomous-Service RBA signal) |
+| Features not implemented or partially implemented | ✓ (§13 — none intentionally left unimplemented; ASN is optional at runtime) |
 
 Verdict: **±** — content is complete, authors block needs filling in
 before submission.
@@ -476,7 +465,7 @@ Guide). No requirement.
 | 11 | IdP via OAuth 2.0 (or SAML)                                                          | ✓ | OAuth 2.0 Device Grant |
 | 12 | IdP implements MFA + RBA; SrvAuthn trusts IdP                                       | ✓ | architecture |
 | 13 | RBA — IP indicator                                                                  | ✓ | `idp/rba.py` |
-| 14 | RBA — "Autonomous Service" indicator                                                | ✗ | **not implemented**; declared in `README.md §13` |
+| 14 | RBA — "Autonomous Service" indicator                                                | ✓ | `idp/rba.py`, local MMDB ASN lookup |
 | 15 | RBA — auth-failures indicator                                                       | ✓ | `idp/rba.py` |
 | 16 | RBA — time-of-day indicator                                                         | ✓ | `idp/rba.py` |
 | 17 | Browser-based MFA flow                                                              | ✓ | `webbrowser.open(verification_uri)` |
@@ -539,8 +528,7 @@ does the *opposite* of what is required:
 | External code must be acknowledged | `README.md §14` lists every dependency | **No** |
 
 **There is no place where the implementation goes against the spec.**
-The two gaps (Autonomous-Service RBA signal, blank authors block) are
-omissions, not contradictions.
+The remaining gap is the blank authors block in `README.md §12`.
 
 ---
 

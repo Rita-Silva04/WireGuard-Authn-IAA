@@ -7,6 +7,7 @@ Tables:
   fido2_credentials- WebAuthn/FIDO2 credentials
   oauth_codes      - short-lived authorization codes
   oauth_tokens     - issued access tokens (stored as SHA-256 hash, single-use, §1.8)
+  auth_lockouts    - identifier-level lockout state, including unknown users
   rba_events       - authentication events for RBA
   rba_ip_history   - per-user IP history
   wg_peers         - issued WireGuard peer configs (+ expires_at for §4.1/4.2)
@@ -32,7 +33,9 @@ DB_PATH = os.environ.get("DB_PATH", "/data/vpnauth.db")
 # v2 — Phase 4: expires_at on wg_peers (§4.1); totp_secrets.secret renamed to
 #               secret_enc (AES-256-GCM ciphertext, §4.6).
 # v3 — Store the username requested by UserAuthn as an OAuth login hint.
-SCHEMA_VERSION = 3
+# v4 — Link RBA audit events to MFA sessions and store risk reasons.
+# v5 — Store SrvAuthn-observed UserAuthn IP on OAuth device codes.
+SCHEMA_VERSION = 5
 
 _local = threading.local()
 
@@ -146,6 +149,14 @@ def init_db():
             updated_at  TEXT DEFAULT (datetime('now'))
         );
 
+        CREATE TABLE IF NOT EXISTS auth_lockouts (
+            identity        TEXT PRIMARY KEY,
+            failed_attempts INTEGER DEFAULT 0,
+            locked_until    INTEGER DEFAULT 0,
+            last_failure_at INTEGER DEFAULT 0,
+            updated_at      TEXT DEFAULT (datetime('now'))
+        );
+
         CREATE TABLE IF NOT EXISTS totp_secrets (
             user_id     INTEGER PRIMARY KEY REFERENCES users(id),
             secret_enc  BLOB    NOT NULL,
@@ -178,6 +189,7 @@ def init_db():
             client_id       TEXT NOT NULL,
             scope           TEXT DEFAULT 'vpn',
             requested_username TEXT,
+            client_ip       TEXT,
             user_id         INTEGER REFERENCES users(id),
             status          TEXT DEFAULT 'pending',
             expires_at      TEXT NOT NULL,
@@ -198,6 +210,7 @@ def init_db():
 
         CREATE TABLE IF NOT EXISTS rba_events (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id      TEXT,
             username        TEXT NOT NULL,
             event_type      TEXT NOT NULL,
             success         INTEGER NOT NULL,
@@ -205,6 +218,7 @@ def init_db():
             asn             TEXT,
             user_agent      TEXT,
             risk_score      REAL DEFAULT 0.0,
+            risk_reasons    TEXT DEFAULT '[]',
             factors_used    TEXT DEFAULT '[]',
             created_at      TEXT DEFAULT (datetime('now'))
         );
@@ -296,6 +310,11 @@ LOCKOUT_WINDOW    = 300      # seconds — 5 minutes
 LOCKOUT_DURATION  = 900      # seconds — 15 minutes
 
 
+def normalize_auth_identifier(username: str) -> str:
+    """Canonical key used for lockout decisions before account lookup."""
+    return (username or "").strip().casefold()
+
+
 def is_user_locked(user_id: int) -> bool:
     """Return True if the user is currently locked out."""
     import time
@@ -317,6 +336,116 @@ def lockout_seconds_remaining(user_id: int) -> int:
         if not row:
             return 0
         return max(0, row["locked_until"] - int(time.time()))
+
+
+def is_identifier_locked(username: str) -> bool:
+    """Return True if this login identifier is currently locked out."""
+    identity = normalize_auth_identifier(username)
+    if not identity:
+        return False
+    now = int(time.time())
+    with db() as conn:
+        row = conn.execute(
+            "SELECT locked_until FROM auth_lockouts WHERE identity=?",
+            (identity,),
+        ).fetchone()
+        return bool(row and row["locked_until"] > now)
+
+
+def identifier_lockout_seconds_remaining(username: str) -> int:
+    identity = normalize_auth_identifier(username)
+    if not identity:
+        return 0
+    now = int(time.time())
+    with db() as conn:
+        row = conn.execute(
+            "SELECT locked_until FROM auth_lockouts WHERE identity=?",
+            (identity,),
+        ).fetchone()
+        if not row:
+            return 0
+        return max(0, row["locked_until"] - now)
+
+
+def record_identifier_failure(username: str):
+    """Increment lockout state for a submitted username, valid or not."""
+    identity = normalize_auth_identifier(username)
+    if not identity:
+        return
+    now = int(time.time())
+    with db() as conn:
+        row = conn.execute(
+            "SELECT failed_attempts, last_failure_at FROM auth_lockouts "
+            "WHERE identity=?",
+            (identity,),
+        ).fetchone()
+        if not row:
+            attempts = 1
+        elif now - row["last_failure_at"] > LOCKOUT_WINDOW:
+            attempts = 1
+        else:
+            attempts = row["failed_attempts"] + 1
+
+        if attempts >= LOCKOUT_THRESHOLD:
+            conn.execute("""
+                INSERT INTO auth_lockouts
+                (identity, failed_attempts, last_failure_at, locked_until,
+                 updated_at)
+                VALUES (?,0,?,?,datetime('now'))
+                ON CONFLICT(identity) DO UPDATE SET
+                    failed_attempts=0,
+                    last_failure_at=excluded.last_failure_at,
+                    locked_until=excluded.locked_until,
+                    updated_at=datetime('now')
+            """, (identity, now, now + LOCKOUT_DURATION))
+        else:
+            conn.execute("""
+                INSERT INTO auth_lockouts
+                (identity, failed_attempts, last_failure_at, locked_until,
+                 updated_at)
+                VALUES (?,?,?,0,datetime('now'))
+                ON CONFLICT(identity) DO UPDATE SET
+                    failed_attempts=excluded.failed_attempts,
+                    last_failure_at=excluded.last_failure_at,
+                    updated_at=datetime('now')
+            """, (identity, attempts, now))
+
+
+def reset_identifier_failures(username: str):
+    identity = normalize_auth_identifier(username)
+    if not identity:
+        return
+    with db() as conn:
+        conn.execute("""
+            UPDATE auth_lockouts
+            SET failed_attempts=0, locked_until=0, updated_at=datetime('now')
+            WHERE identity=?
+        """, (identity,))
+
+
+def is_auth_locked(username: str, user_id: int = None) -> bool:
+    return (
+        is_identifier_locked(username)
+        or (user_id is not None and is_user_locked(user_id))
+    )
+
+
+def auth_lockout_seconds_remaining(username: str, user_id: int = None) -> int:
+    seconds = identifier_lockout_seconds_remaining(username)
+    if user_id is not None:
+        seconds = max(seconds, lockout_seconds_remaining(user_id))
+    return seconds
+
+
+def record_auth_failure(username: str, user_id: int = None):
+    record_identifier_failure(username)
+    if user_id is not None:
+        record_factor_failure(user_id)
+
+
+def reset_auth_failures(username: str, user_id: int):
+    reset_identifier_failures(username)
+    reset_failed_attempts(user_id)
 
 
 def record_factor_failure(user_id: int):
@@ -516,13 +645,16 @@ def update_fido2_sign_count(cred_id: str, sign_count: int):
 
 def create_device_code(device_code: str, user_code: str, client_id: str,
                        scope: str, expires_at: str,
-                       requested_username: str | None = None):
+                       requested_username: str | None = None,
+                       client_ip: str | None = None):
     with db() as conn:
         conn.execute("""
             INSERT INTO device_codes
-            (device_code, user_code, client_id, scope, requested_username, expires_at)
-            VALUES (?,?,?,?,?,?)
-        """, (device_code, user_code, client_id, scope, requested_username, expires_at))
+            (device_code, user_code, client_id, scope, requested_username,
+             client_ip, expires_at)
+            VALUES (?,?,?,?,?,?,?)
+        """, (device_code, user_code, client_id, scope, requested_username,
+              client_ip, expires_at))
 
 
 def get_device_code(device_code: str):
@@ -659,24 +791,44 @@ def consume_password_nonce(session_id: str) -> bytes | None:
 def log_rba_event(username: str, event_type: str, success: bool,
                    ip_address: str = None, asn: str = None,
                    risk_score: float = 0.0, factors_used: str = "[]",
-                   user_agent: str = None):
+                   user_agent: str = None, session_id: str = None,
+                   risk_reasons: str = "[]"):
     with db() as conn:
         conn.execute("""
             INSERT INTO rba_events
-            (username, event_type, success, ip_address, asn,
-             risk_score, factors_used, user_agent)
-            VALUES (?,?,?,?,?,?,?,?)
-        """, (username, event_type, 1 if success else 0,
-              ip_address, asn, risk_score, factors_used, user_agent))
+            (session_id, username, event_type, success, ip_address, asn,
+             risk_score, risk_reasons, factors_used, user_agent)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+        """, (session_id, username, event_type, 1 if success else 0,
+              ip_address, asn, risk_score, risk_reasons, factors_used,
+              user_agent))
 
 
 def get_recent_failures(username: str, minutes: int = 30):
     with db() as conn:
         return conn.execute("""
             SELECT COUNT(*) as cnt FROM rba_events
-            WHERE username=? AND success=0
+            WHERE username=?
+            AND event_type IN (
+                'password_fail',
+                'totp_fail',
+                'fido2_fail',
+                'auth_blocked_missing_factor',
+                'auth_failed'
+            )
             AND created_at > datetime('now', ? || ' minutes')
         """, (username, f"-{minutes}")).fetchone()["cnt"]
+
+
+def get_rba_context(session_id: str):
+    """Return the auth_start RBA context for an MFA session, if present."""
+    with db() as conn:
+        return conn.execute("""
+            SELECT * FROM rba_events
+            WHERE session_id=? AND event_type='auth_start'
+            ORDER BY id DESC
+            LIMIT 1
+        """, (session_id,)).fetchone()
 
 
 def get_ip_history(user_id: int):

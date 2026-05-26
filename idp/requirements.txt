@@ -3,3 +3,4 @@ pyotp
 qrcode[pil]
 pillow
 webauthn>=2.0
+geoip2>=4.8

@@ -187,12 +187,18 @@ def handle_auth(session, hello: dict, cfg: configparser.ConfigParser):
 
     idp_url   = cfg.get("server", "idp_url", fallback="http://localhost:8080")
     client_id = cfg.get("server", "oauth_client_id", fallback="srvauthn")
+    client_secret = cfg.get(
+        "server", "oauth_client_secret",
+        fallback=os.environ.get("OAUTH_CLIENT_SECRET", ""),
+    )
 
     try:
         dev_resp = _http_post(f"{idp_url}/oauth/device/code", {
             "client_id": client_id,
+            "client_secret": client_secret,
             "scope":     "vpn",
             "requested_username": username,
+            "client_ip": peer_ip,
         })
     except Exception as e:
         log.error(f"IdP device/code failed: {e}")
@@ -219,6 +225,7 @@ def handle_auth(session, hello: dict, cfg: configparser.ConfigParser):
                 "grant_type":  "urn:ietf:params:oauth:grant-type:device_code",
                 "device_code": device_code,
                 "client_id":   client_id,
+                "client_secret": client_secret,
             })
             access_token = tok_resp["access_token"]
             log.info(f"Token obtained for user={username}")

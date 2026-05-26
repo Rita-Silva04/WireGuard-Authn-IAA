@@ -66,6 +66,9 @@ DEV_CODE_TTL    = 600   # seconds
 TOKEN_TTL       = 60    # §1.8 — short-lived OAuth access tokens
 MFA_SESSION_TTL = 300   # seconds
 
+GENERIC_AUTH_ERROR = "Authentication failed. Check your credentials and try again later."
+GENERIC_AUTH_UNAVAILABLE = "Authentication is temporarily unavailable. Try again later."
+
 # §1.6 — scrypt parameters for the password verifier.
 SCRYPT_N      = 2 ** 14
 SCRYPT_R      = 8
@@ -114,12 +117,60 @@ def _user_code() -> str:
     return f"{a}-{b}"
 
 
-def _lockout_response(user, session_id, factor):
-    """Render an 'account temporarily locked' page (§1.10)."""
-    remaining = database.lockout_seconds_remaining(user["id"])
-    msg = (f"Account temporarily locked due to repeated failures. "
-           f"Try again in {remaining // 60} min {remaining % 60} s.")
-    return render_template("error.html", error=msg), 429
+def _lockout_message(seconds: int) -> str:
+    if seconds <= 0:
+        seconds = database.LOCKOUT_DURATION
+    minutes = max(1, (seconds + 59) // 60)
+    unit = "minute" if minutes == 1 else "minutes"
+    return (f"Too many failed authentication attempts. "
+            f"Try again in about {minutes} {unit}.")
+
+
+def _lockout_seconds(user=None, username: str = None) -> int:
+    if user:
+        return database.auth_lockout_seconds_remaining(
+            username or user["username"], user["id"]
+        )
+    return database.auth_lockout_seconds_remaining(username or "")
+
+
+def _lockout_response(user=None, session_id=None, factor=None,
+                      username: str = None):
+    """Return the same lockout message for known and unknown identifiers."""
+    return render_template(
+        "error.html",
+        error=_lockout_message(_lockout_seconds(user, username)),
+    ), 429
+
+
+def _lockout_json(user=None, username: str = None):
+    return jsonify({
+        "error": "locked_out",
+        "message": _lockout_message(_lockout_seconds(user, username)),
+    }), 429
+
+
+def _request_ip() -> str:
+    return request.remote_addr or "0.0.0.0"
+
+
+def _request_user_agent() -> str:
+    return request.headers.get("User-Agent", "")
+
+
+def _session_rba_context(session_id: str):
+    return database.get_rba_context(session_id)
+
+
+def _ctx_value(ctx, key: str, fallback):
+    return ctx[key] if ctx and ctx[key] is not None else fallback
+
+
+def _client_secret_valid(client, supplied_secret: str) -> bool:
+    expected = client["client_secret"]
+    return bool(supplied_secret) and hmac.compare_digest(
+        str(expected), str(supplied_secret)
+    )
 
 
 # ── Device Authorization Grant ─────────────────────────────────────────────────
@@ -129,6 +180,11 @@ def device_code():
     """RFC 8628 §3.1 — Device Authorization Request."""
     payload = request.get_json(silent=True) or {}
     client_id = request.form.get("client_id") or payload.get("client_id", "")
+    client_secret = (
+        request.form.get("client_secret")
+        or payload.get("client_secret")
+        or ""
+    )
     scope     = request.form.get("scope", "vpn")
     requested_username = (
         request.form.get("requested_username")
@@ -137,9 +193,15 @@ def device_code():
         or payload.get("login_hint")
         or ""
     ).strip()
+    client_ip = (
+        request.form.get("client_ip")
+        or payload.get("client_ip")
+        or request.remote_addr
+        or "0.0.0.0"
+    ).strip()
 
     client = database.get_oauth_client(client_id)
-    if not client:
+    if not client or not _client_secret_valid(client, client_secret):
         return jsonify({"error": "invalid_client"}), 401
 
     dev_code  = secrets.token_urlsafe(32)
@@ -149,6 +211,7 @@ def device_code():
     database.create_device_code(
         dev_code, user_code, client_id, scope, expires,
         requested_username or None,
+        client_ip or None,
     )
 
     verification_uri = f"{ORIGIN}/oauth/device"
@@ -198,12 +261,12 @@ def device_verify():
                                requested_username=requested_username)
 
     # §1.10 — refuse to start an MFA session for a locked-out user.
-    if database.is_user_locked(user["id"]):
-        return _lockout_response(user, None, factor=None)
+    if database.is_auth_locked(username, user["id"]):
+        return _lockout_response(user=user, username=username)
 
     # RBA — compute risk and required factors (§1.4)
-    ip  = request.remote_addr or "0.0.0.0"
-    ua  = request.headers.get("User-Agent", "")
+    ip  = row["client_ip"] or _request_ip()
+    ua  = _request_user_agent()
     rba = compute_risk(username, ip, ua)
 
     # §1.4 — strict policy: reject if the user lacks a required factor.
@@ -216,7 +279,9 @@ def device_verify():
             event_type  = "auth_blocked_missing_factor",
             success     = False,
             ip_address  = ip,
+            asn         = rba["asn"],
             risk_score  = rba["score"],
+            risk_reasons= json.dumps(rba["reasons"]),
             factors_used= json.dumps(rba.get("missing", [])),
             user_agent  = ua,
         )
@@ -235,11 +300,14 @@ def device_verify():
     database.log_rba_event(
         username    = username,
         event_type  = "auth_start",
-        success     = False,
+        success     = True,
         ip_address  = ip,
+        asn         = rba["asn"],
         risk_score  = rba["score"],
+        risk_reasons= json.dumps(rba["reasons"]),
         factors_used= json.dumps(rba["factors"]),
         user_agent  = ua,
+        session_id  = mfa_sid,
     )
 
     # §2.3/2.7 — kick off the PAM thread; it will start asking for factors
@@ -281,15 +349,15 @@ def mfa_page(session_id):
     """
     mfa = database.get_mfa_session(session_id)
     if not mfa or _is_expired(mfa["expires_at"]):
-        return render_template("error.html", error="MFA session expired."), 400
+        return render_template("error.html", error=GENERIC_AUTH_ERROR), 400
 
     user = database.get_user_by_id(mfa["user_id"])
 
     # §1.10 — lockout check at the top of every factor route.
-    if database.is_user_locked(user["id"]):
+    if database.is_auth_locked(user["username"], user["id"]):
         # Make sure no PAM thread is still parked on a response.
         pam_bridge.submit_factor_result(session_id, "FAIL")
-        return _lockout_response(user, session_id, factor=None)
+        return _lockout_response(user=user, session_id=session_id, factor=None)
 
     # If PAM has already finished, route to success/failure terminal page.
     final = pam_bridge.get_result(session_id)
@@ -297,7 +365,7 @@ def mfa_page(session_id):
         return _complete_auth(mfa, session_id)
     if final is False:
         return render_template("error.html",
-                               error="Authentication failed."), 401
+                               error=GENERIC_AUTH_ERROR), 401
 
     # Otherwise block briefly waiting for the next PAM prompt.
     prompt = pam_bridge.wait_for_prompt(session_id, timeout=5.0)
@@ -308,7 +376,7 @@ def mfa_page(session_id):
             return _complete_auth(mfa, session_id)
         if final is False:
             return render_template("error.html",
-                                   error="Authentication failed."), 401
+                                   error=GENERIC_AUTH_ERROR), 401
         # Still pending — ask the browser to refresh.
         return render_template("error.html",
                                error="Authentication is still in progress. "
@@ -317,7 +385,7 @@ def mfa_page(session_id):
     factor = _factor_from_prompt(prompt[0])
     if factor is None:
         return render_template("error.html",
-                               error=f"Unknown PAM prompt: {prompt[0]!r}"), 500
+                               error=GENERIC_AUTH_UNAVAILABLE), 500
 
     required = json.loads(mfa["required_factors"])
     return render_template("mfa.html",
@@ -342,17 +410,15 @@ def mfa_password_challenge(session_id):
     """
     mfa = database.get_mfa_session(session_id)
     if not mfa or _is_expired(mfa["expires_at"]):
-        return jsonify({"error": "session_expired"}), 400
+        return jsonify({"error": "authentication_unavailable"}), 400
 
     user = database.get_user_by_id(mfa["user_id"])
-    if database.is_user_locked(user["id"]):
-        return jsonify({"error": "account_locked",
-                        "retry_after_seconds":
-                            database.lockout_seconds_remaining(user["id"])}), 429
+    if database.is_auth_locked(user["username"], user["id"]):
+        return _lockout_json(user=user)
 
     verifier = database.get_password_verifier(user["id"])
     if not verifier:
-        return jsonify({"error": "no_password_enrolled"}), 400
+        return jsonify({"error": "authentication_unavailable"}), 400
 
     salt, _ = verifier
     nonce = secrets.token_bytes(32)
@@ -371,12 +437,13 @@ def mfa_password(session_id):
     """Verify proof = HMAC-SHA256(verifier, nonce) — replay-rejected (§1.6)."""
     mfa = database.get_mfa_session(session_id)
     if not mfa or _is_expired(mfa["expires_at"]):
-        return jsonify({"error": "Session expired"}), 400
+        return jsonify({"error": "authentication_unavailable"}), 400
 
     user = database.get_user_by_id(mfa["user_id"])
 
-    if database.is_user_locked(user["id"]):
-        return _lockout_response(user, session_id, factor="password")
+    if database.is_auth_locked(user["username"], user["id"]):
+        return _lockout_response(user=user, session_id=session_id,
+                                 factor="password")
 
     proof_b64 = request.form.get("proof", "")
     try:
@@ -395,17 +462,27 @@ def mfa_password(session_id):
         valid = hmac.compare_digest(expected, proof)
 
     if not valid:
-        database.record_factor_failure(user["id"])
-        database.log_rba_event(user["username"], "password_fail", False,
-                                request.remote_addr)
+        ctx = _session_rba_context(session_id)
+        database.record_auth_failure(user["username"], user["id"])
+        database.log_rba_event(
+            user["username"], "password_fail", False,
+            ip_address  = _ctx_value(ctx, "ip_address", _request_ip()),
+            user_agent  = _ctx_value(ctx, "user_agent", _request_user_agent()),
+            session_id  = session_id,
+            risk_score  = _ctx_value(ctx, "risk_score", 0.0),
+            risk_reasons= _ctx_value(ctx, "risk_reasons", "[]"),
+            factors_used= _ctx_value(ctx, "factors_used", "[]"),
+        )
         # If this failure triggered the lockout, tear down the PAM thread so
         # it doesn't sit blocked on response_event for FACTOR_TIMEOUT.
-        if database.is_user_locked(user["id"]):
+        if database.is_auth_locked(user["username"], user["id"]):
             pam_bridge.submit_factor_result(session_id, "FAIL")
+            return _lockout_response(user=user, session_id=session_id,
+                                     factor="password")
         return render_template("mfa.html",
                                session_id=session_id,
                                factor="password",
-                               error="Incorrect password.",
+                               error=GENERIC_AUTH_ERROR,
                                username=user["username"],
                                required=json.loads(mfa["required_factors"]),
                                password_ok=0, totp_ok=mfa["totp_ok"],
@@ -420,12 +497,13 @@ def mfa_password(session_id):
 def mfa_totp(session_id):
     mfa = database.get_mfa_session(session_id)
     if not mfa or _is_expired(mfa["expires_at"]):
-        return jsonify({"error": "Session expired"}), 400
+        return jsonify({"error": "authentication_unavailable"}), 400
 
     user = database.get_user_by_id(mfa["user_id"])
 
-    if database.is_user_locked(user["id"]):
-        return _lockout_response(user, session_id, factor="totp")
+    if database.is_auth_locked(user["username"], user["id"]):
+        return _lockout_response(user=user, session_id=session_id,
+                                 factor="totp")
 
     code  = request.form.get("code", "").strip()
     totp_row = database.get_totp_secret(user["id"])
@@ -436,15 +514,25 @@ def mfa_totp(session_id):
         valid = totp.verify(code, valid_window=1)
 
     if not valid:
-        database.record_factor_failure(user["id"])
-        database.log_rba_event(user["username"], "totp_fail", False,
-                                request.remote_addr)
-        if database.is_user_locked(user["id"]):
+        ctx = _session_rba_context(session_id)
+        database.record_auth_failure(user["username"], user["id"])
+        database.log_rba_event(
+            user["username"], "totp_fail", False,
+            ip_address  = _ctx_value(ctx, "ip_address", _request_ip()),
+            user_agent  = _ctx_value(ctx, "user_agent", _request_user_agent()),
+            session_id  = session_id,
+            risk_score  = _ctx_value(ctx, "risk_score", 0.0),
+            risk_reasons= _ctx_value(ctx, "risk_reasons", "[]"),
+            factors_used= _ctx_value(ctx, "factors_used", "[]"),
+        )
+        if database.is_auth_locked(user["username"], user["id"]):
             pam_bridge.submit_factor_result(session_id, "FAIL")
+            return _lockout_response(user=user, session_id=session_id,
+                                     factor="totp")
         return render_template("mfa.html",
                                session_id=session_id,
                                factor="totp",
-                               error="Invalid TOTP code.",
+                               error=GENERIC_AUTH_ERROR,
                                username=user["username"],
                                required=json.loads(mfa["required_factors"]),
                                password_ok=mfa["password_ok"], totp_ok=0,
@@ -459,11 +547,11 @@ def mfa_totp(session_id):
 def mfa_fido2_start(session_id):
     mfa = database.get_mfa_session(session_id)
     if not mfa or _is_expired(mfa["expires_at"]):
-        return jsonify({"error": "Session expired"}), 400
+        return jsonify({"error": "authentication_unavailable"}), 400
 
     user = database.get_user_by_id(mfa["user_id"])
-    if database.is_user_locked(user["id"]):
-        return jsonify({"error": "account_locked"}), 429
+    if database.is_auth_locked(user["username"], user["id"]):
+        return _lockout_json(user=user)
 
     creds = database.get_fido2_credentials(mfa["user_id"])
     allow_creds = [
@@ -484,15 +572,15 @@ def mfa_fido2_start(session_id):
 def mfa_fido2_finish(session_id):
     mfa = database.get_mfa_session(session_id)
     if not mfa or _is_expired(mfa["expires_at"]):
-        return jsonify({"error": "Session expired"}), 400
+        return jsonify({"error": "authentication_unavailable"}), 400
 
     user = database.get_user_by_id(mfa["user_id"])
-    if database.is_user_locked(user["id"]):
-        return jsonify({"error": "account_locked"}), 429
+    if database.is_auth_locked(user["username"], user["id"]):
+        return _lockout_json(user=user)
 
     challenge_b64 = session.get(f"fido2_challenge_{session_id}")
     if not challenge_b64:
-        return jsonify({"error": "No FIDO2 challenge in session"}), 400
+        return jsonify({"error": "authentication_unavailable"}), 400
 
     body    = request.get_json()
     cred_id = body.get("id", "")
@@ -500,8 +588,21 @@ def mfa_fido2_finish(session_id):
     cred_id_norm = cred_id.replace("+", "-").replace("/", "_").rstrip("=")
     cred_row = database.get_fido2_credential_by_id(cred_id_norm)
     if not cred_row or cred_row["user_id"] != mfa["user_id"]:
-        database.record_factor_failure(user["id"])
-        return jsonify({"error": "Credential not found"}), 401
+        ctx = _session_rba_context(session_id)
+        database.record_auth_failure(user["username"], user["id"])
+        database.log_rba_event(
+            user["username"], "fido2_fail", False,
+            ip_address  = _ctx_value(ctx, "ip_address", _request_ip()),
+            user_agent  = _ctx_value(ctx, "user_agent", _request_user_agent()),
+            session_id  = session_id,
+            risk_score  = _ctx_value(ctx, "risk_score", 0.0),
+            risk_reasons= _ctx_value(ctx, "risk_reasons", "[]"),
+            factors_used= _ctx_value(ctx, "factors_used", "[]"),
+        )
+        if database.is_auth_locked(user["username"], user["id"]):
+            pam_bridge.submit_factor_result(session_id, "FAIL")
+            return _lockout_json(user=user)
+        return jsonify({"error": "authentication_failed"}), 401
 
     def b64url_to_bytes(s):
         s = s.replace("-", "+").replace("_", "/")
@@ -519,8 +620,21 @@ def mfa_fido2_finish(session_id):
             require_user_verification = True,   # §1.9
         )
     except Exception as e:
-        database.record_factor_failure(user["id"])
-        return jsonify({"error": str(e)}), 401
+        ctx = _session_rba_context(session_id)
+        database.record_auth_failure(user["username"], user["id"])
+        database.log_rba_event(
+            user["username"], "fido2_fail", False,
+            ip_address  = _ctx_value(ctx, "ip_address", _request_ip()),
+            user_agent  = _ctx_value(ctx, "user_agent", _request_user_agent()),
+            session_id  = session_id,
+            risk_score  = _ctx_value(ctx, "risk_score", 0.0),
+            risk_reasons= _ctx_value(ctx, "risk_reasons", "[]"),
+            factors_used= _ctx_value(ctx, "factors_used", "[]"),
+        )
+        if database.is_auth_locked(user["username"], user["id"]):
+            pam_bridge.submit_factor_result(session_id, "FAIL")
+            return _lockout_json(user=user)
+        return jsonify({"error": "authentication_failed"}), 401
 
     database.update_fido2_sign_count(cred_id_norm, verification.new_sign_count)
     database.update_mfa_session(session_id, fido2_ok=1)
@@ -531,15 +645,24 @@ def mfa_fido2_finish(session_id):
 def _complete_auth(mfa, session_id):
     """All factors passed — approve device code and reset failure counters."""
     database.approve_device_code(mfa["device_code"], mfa["user_id"])
-    database.reset_failed_attempts(mfa["user_id"])   # §1.10
-    pam_bridge.cleanup(session_id)
     user = database.get_user_by_id(mfa["user_id"])
+    database.reset_auth_failures(user["username"], mfa["user_id"])   # §1.10
+    pam_bridge.cleanup(session_id)
+    ctx = _session_rba_context(session_id)
+    ip = _ctx_value(ctx, "ip_address", _request_ip())
+    asn = _ctx_value(ctx, "asn", None)
+    database.upsert_ip_history(user["id"], ip, asn=asn)
     database.log_rba_event(
         username     = user["username"],
         event_type   = "auth_success",
         success      = True,
-        ip_address   = request.remote_addr,
-        factors_used = mfa["required_factors"],
+        ip_address   = ip,
+        asn          = asn,
+        user_agent   = _ctx_value(ctx, "user_agent", _request_user_agent()),
+        session_id   = session_id,
+        risk_score   = _ctx_value(ctx, "risk_score", 0.0),
+        risk_reasons = _ctx_value(ctx, "risk_reasons", "[]"),
+        factors_used = _ctx_value(ctx, "factors_used", mfa["required_factors"]),
     )
     return render_template("success.html", username=user["username"])
 
@@ -552,12 +675,13 @@ def token():
     grant_type  = request.form.get("grant_type", "")
     device_code = request.form.get("device_code", "")
     client_id   = request.form.get("client_id", "")
+    client_secret = request.form.get("client_secret", "")
 
     if grant_type != "urn:ietf:params:oauth:grant-type:device_code":
         return jsonify({"error": "unsupported_grant_type"}), 400
 
     client = database.get_oauth_client(client_id)
-    if not client:
+    if not client or not _client_secret_valid(client, client_secret):
         return jsonify({"error": "invalid_client"}), 401
 
     row = database.get_device_code(device_code)

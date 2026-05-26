@@ -22,7 +22,9 @@ async function startFido2(sessionId) {
 
     try {
         const optResp = await fetch(`/oauth/mfa/${sessionId}/fido2/start`);
-        const opts    = prepareAuthOptions(await optResp.json());
+        const optData = await optResp.json();
+        if (!optResp.ok) throw new Error(optData.message || 'Authentication failed.');
+        const opts    = prepareAuthOptions(optData);
         const cred    = await navigator.credentials.get({publicKey: opts});
 
         const body = {
@@ -48,7 +50,7 @@ async function startFido2(sessionId) {
             msg.innerHTML = '<div class="ok" style="margin-top:12px">✅ YubiKey verified! Redirecting…</div>';
             setTimeout(()=>{ window.location=`/oauth/mfa/${sessionId}`; }, 800);
         } else {
-            msg.innerHTML = `<div class="err" style="margin-top:12px">❌ ${data.error}</div>`;
+            msg.innerHTML = `<div class="err" style="margin-top:12px">❌ ${data.message || data.error || 'Authentication failed.'}</div>`;
             btn.disabled = false;
         }
     } catch(e) {
