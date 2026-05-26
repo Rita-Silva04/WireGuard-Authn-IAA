@@ -102,7 +102,8 @@ services:
     environment:
       - SERVER_PUBKEY=${SERVER_PUBKEY}
     volumes:
-      - .:/workspace
+      - ./client:/workspace/client
+      - ./common:/workspace/common
     working_dir: /workspace
     cap_add:
       - NET_ADMIN

@@ -15,7 +15,13 @@
          style="text-transform:uppercase;letter-spacing:.1em;font-size:1.3rem;text-align:center">
 
   <label>Username</label>
+  {% if requested_username %}
+  <input type="text" name="username" value="{{ requested_username }}"
+         autocomplete="username">
+  <p class="field-hint">Prefilled from the VPN client. The IdP login is authoritative.</p>
+  {% else %}
   <input type="text" name="username" placeholder="your username" autocomplete="username">
+  {% endif %}
 
   <button class="btn btn-primary" type="submit">Continue →</button>
 </form>

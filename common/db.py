@@ -31,7 +31,8 @@ DB_PATH = os.environ.get("DB_PATH", "/data/vpnauth.db")
 #               columns on users, password nonce on mfa_sessions.
 # v2 — Phase 4: expires_at on wg_peers (§4.1); totp_secrets.secret renamed to
 #               secret_enc (AES-256-GCM ciphertext, §4.6).
-SCHEMA_VERSION = 2
+# v3 — Store the username requested by UserAuthn as an OAuth login hint.
+SCHEMA_VERSION = 3
 
 _local = threading.local()
 
@@ -176,6 +177,7 @@ def init_db():
             user_code       TEXT UNIQUE NOT NULL,
             client_id       TEXT NOT NULL,
             scope           TEXT DEFAULT 'vpn',
+            requested_username TEXT,
             user_id         INTEGER REFERENCES users(id),
             status          TEXT DEFAULT 'pending',
             expires_at      TEXT NOT NULL,
@@ -513,13 +515,14 @@ def update_fido2_sign_count(cred_id: str, sign_count: int):
 # ── Device code (OAuth Device Grant) helpers ──────────────────────────────────
 
 def create_device_code(device_code: str, user_code: str, client_id: str,
-                        scope: str, expires_at: str):
+                       scope: str, expires_at: str,
+                       requested_username: str | None = None):
     with db() as conn:
         conn.execute("""
             INSERT INTO device_codes
-            (device_code, user_code, client_id, scope, expires_at)
-            VALUES (?,?,?,?,?)
-        """, (device_code, user_code, client_id, scope, expires_at))
+            (device_code, user_code, client_id, scope, requested_username, expires_at)
+            VALUES (?,?,?,?,?,?)
+        """, (device_code, user_code, client_id, scope, requested_username, expires_at))
 
 
 def get_device_code(device_code: str):

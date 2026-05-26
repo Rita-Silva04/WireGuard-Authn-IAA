@@ -10,8 +10,9 @@ What it does (idempotent — safe to re-run):
   2. Generate .env with real secrets
   3. Generate the WireGuard server keypair
   4. Generate server/srvauthn.conf
-  5. Build and start the Docker stack
-  6. Enrol a test user (default: alice) with password + TOTP
+  5. Prepare runtime data directory
+  6. Build and start the Docker stack
+  7. Enrol a test user (default: alice) with password + TOTP
 
 After this script succeeds, run:
     python3 scripts/test_e2e.py
@@ -194,6 +195,18 @@ allowed_ips = 10.10.10.0/24
     ok("client/base.conf written")
 
 
+def prepare_data_dir():
+    step("4c", "Runtime data directory (data/)")
+    path = os.path.join(PROJECT_ROOT, "data")
+    os.makedirs(path, exist_ok=True)
+
+    # Docker bind-mounts this directory as /data. On hosts using user namespace
+    # remapping, container-created files can appear as nobody:nogroup; keeping
+    # the directory host-owned and writable avoids reset/delete failures.
+    os.chmod(path, 0o777)
+    ok("data/ ready for Docker bind mount")
+
+
 def start_stack(force):
     step(5, "Build and start Docker stack")
 
@@ -355,6 +368,7 @@ def main():
     pubkey = generate_wg_keys(args.force)
     generate_srvauthn_conf(pubkey, args.force)
     generate_base_conf(pubkey, args.force)
+    prepare_data_dir()
     start_stack(args.force)
     enrol_user(args.username if hasattr(args, "username") else args.user,
                args.password, args.force)

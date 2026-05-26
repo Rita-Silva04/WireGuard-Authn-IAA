@@ -2,7 +2,7 @@ FROM python:3.12-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    wireguard-tools iproute2 iptables procps \
+    wireguard-tools iproute2 iptables procps sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY server/requirements.txt .

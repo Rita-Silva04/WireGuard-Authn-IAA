@@ -82,12 +82,12 @@ def rm_path(path: str):
 
 def stop_stack(remove_images: bool):
     step(1, "Stop the Docker stack")
-    args = "down"
+    args = "--profile client down"
     if remove_images:
         args += " --rmi local --volumes"
     r = shell(f"docker compose {args}", capture=False)
     if r.returncode == 0:
-        ok("docker compose down")
+        ok("docker compose --profile client down")
     else:
         warn("docker compose down exited non-zero — stack may already be stopped")
 

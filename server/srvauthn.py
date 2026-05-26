@@ -192,6 +192,7 @@ def handle_auth(session, hello: dict, cfg: configparser.ConfigParser):
         dev_resp = _http_post(f"{idp_url}/oauth/device/code", {
             "client_id": client_id,
             "scope":     "vpn",
+            "requested_username": username,
         })
     except Exception as e:
         log.error(f"IdP device/code failed: {e}")
@@ -251,6 +252,18 @@ def handle_auth(session, hello: dict, cfg: configparser.ConfigParser):
         _send_err(session, "userinfo_failed")
         return
 
+    authenticated_username = info.get("username", "").strip()
+    if not authenticated_username:
+        log.error("Userinfo response did not include a username")
+        _send_err(session, "userinfo_missing_username")
+        return
+    if authenticated_username != username:
+        log.info(
+            "UserAuthn requested user=%s; IdP authenticated user=%s. "
+            "Using IdP identity for provisioning.",
+            username, authenticated_username,
+        )
+
     # Server generates the client's WG keypair (§1.1)
     client_wg_priv, client_wg_pub = wg_keypair()
     log.info(f"Generated client WG keypair (pub fp={fingerprint(client_wg_pub)})")
@@ -258,7 +271,7 @@ def handle_auth(session, hello: dict, cfg: configparser.ConfigParser):
     subnet  = cfg.get("server", "internal_subnet", fallback="10.10.10.0/24")
     srv_pub = cfg.get("server", "wg_public_key", fallback="")
 
-    user = database.get_user(username)
+    user = database.get_user(authenticated_username)
     if not user:
         _send_err(session, "unknown_user")
         return
@@ -286,7 +299,7 @@ def handle_auth(session, hello: dict, cfg: configparser.ConfigParser):
         "client_wg_private_key": client_wg_priv,
         "client_wg_public_key":  client_wg_pub,
         "psk":                   client_psk,
-        "username":              info.get("username", username),
+        "username":              authenticated_username,
     })
 
     register_wg_peer(interface, client_wg_pub, client_ip, client_psk)

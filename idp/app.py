@@ -127,9 +127,16 @@ def _lockout_response(user, session_id, factor):
 @app.route("/oauth/device/code", methods=["POST"])
 def device_code():
     """RFC 8628 §3.1 — Device Authorization Request."""
-    client_id = (request.form.get("client_id")
-                 or (request.json or {}).get("client_id", ""))
+    payload = request.get_json(silent=True) or {}
+    client_id = request.form.get("client_id") or payload.get("client_id", "")
     scope     = request.form.get("scope", "vpn")
+    requested_username = (
+        request.form.get("requested_username")
+        or request.form.get("login_hint")
+        or payload.get("requested_username")
+        or payload.get("login_hint")
+        or ""
+    ).strip()
 
     client = database.get_oauth_client(client_id)
     if not client:
@@ -139,7 +146,10 @@ def device_code():
     user_code = _user_code()
     expires   = _expires_iso(DEV_CODE_TTL)
 
-    database.create_device_code(dev_code, user_code, client_id, scope, expires)
+    database.create_device_code(
+        dev_code, user_code, client_id, scope, expires,
+        requested_username or None,
+    )
 
     verification_uri = f"{ORIGIN}/oauth/device"
     return jsonify({
@@ -156,7 +166,14 @@ def device_code():
 def device_page():
     """Browser landing page — user enters user_code."""
     prefill = request.args.get("code", "")
-    return render_template("device.html", prefill=prefill)
+    requested_username = ""
+    if prefill:
+        row = database.get_device_code_by_user_code(prefill.strip().upper())
+        if row:
+            requested_username = row["requested_username"] or ""
+    return render_template("device.html",
+                           prefill=prefill,
+                           requested_username=requested_username)
 
 
 @app.route("/oauth/device/verify", methods=["POST"])
@@ -172,10 +189,13 @@ def device_verify():
     if row["status"] != "pending":
         return render_template("device.html", error="Code already used.", prefill="")
 
+    requested_username = row["requested_username"] or ""
     user = database.get_user(username)
     if not user:
         return render_template("device.html",
-                               error="Unknown username.", prefill=user_code)
+                               error="Unknown username.",
+                               prefill=user_code,
+                               requested_username=requested_username)
 
     # §1.10 — refuse to start an MFA session for a locked-out user.
     if database.is_user_locked(user["id"]):
