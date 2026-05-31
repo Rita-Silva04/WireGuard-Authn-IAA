@@ -55,10 +55,7 @@ Fig.~\ref{fig:mfa-password} shows the browser form during this step.
 
 \begin{figure}[H]
   \centering
-  % HOW TO TAKE: capture the browser password challenge form during a
-  % VPN login. The form shows a password input; the page title should
-  % indicate it is the "Password" step of the MFA flow.
-  \imgplaceholder[3.5cm]{Browser: password challenge-response form during VPN login}
+  \includegraphics[width=0.8\columnwidth]{images/mfa-password}
   \caption{Password step: scrypt and the HMAC proof run client-side.}
   \label{fig:mfa-password}
 \end{figure}
@@ -74,6 +71,13 @@ code (Fig.~\ref{fig:totp-enrol}). Confirmation requires the user to submit
 a valid code, after which the row in \texttt{totp\_secrets} flips to
 \texttt{confirmed=1}.
 
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=1.0\columnwidth]{images/totp-enrol}
+  \caption{TOTP QR code during helpdesk enrolment.}
+  \label{fig:totp-enrol}
+\end{figure}
+
 The secret is stored encrypted at rest under AES-256-GCM
 (\texttt{common/db.py:\_encrypt}); see Section~\ref{sec:security}.
 At login the browser presents a 6-digit code entry form
@@ -81,19 +85,9 @@ At login the browser presents a 6-digit code entry form
 
 \begin{figure}[H]
   \centering
-  \begin{minipage}[b]{0.47\columnwidth}
-    \imgplaceholder[3cm]{Helpdesk: TOTP QR code displayed during enrolment}
-    \caption{TOTP QR code during helpdesk enrolment.}
-    \label{fig:totp-enrol}
-  \end{minipage}
-  \hfill
-  \begin{minipage}[b]{0.47\columnwidth}
-    % HOW TO TAKE: capture the 6-digit TOTP code input form that appears
-    % in the browser during a VPN login (after the password step).
-    \imgplaceholder[3cm]{Browser: TOTP 6-digit code entry during VPN login}
-    \caption{TOTP step during VPN authentication.}
-    \label{fig:mfa-totp}
-  \end{minipage}
+  \includegraphics[width=0.8\columnwidth]{images/mfa-totp}
+  \caption{TOTP step during VPN authentication.}
+  \label{fig:mfa-totp}
 \end{figure}
 
 \subsection{FIDO2 / WebAuthn}
@@ -102,18 +96,43 @@ We use the \texttt{webauthn} (v$\geq$2) Python library on the server and the
 browser's native \texttt{navigator.credentials} API on the client.
 
 Enrolment uses the helpdesk's \texttt{/fido2/start} and
-\texttt{/fido2/finish} endpoints; the browser's WebAuthn dialog asks
-the user to select the authenticator device (Fig.~\ref{fig:fido2-reg}),
-and on success the credential appears in the user's panel
-(Fig.~\ref{fig:fido2-done}).
+\texttt{/fido2/finish} endpoints.
+The browser's WebAuthn dialog first asks the user to select the
+authenticator device (Fig.~\ref{fig:fido2-reg}).
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.8\columnwidth]{images/fido2-reg}
+  \caption{Authenticator selection during FIDO2 registration.}
+  \label{fig:fido2-reg}
+\end{figure}
 
 Both registration and authentication set
 \texttt{UserVerificationRequirement.REQUIRED}, which forces the
 authenticator to validate a local PIN, biometric, or password before
 releasing the credential's private key.
-A physically stolen, unlocked security key therefore cannot satisfy this
-factor (the assertion will be missing the \texttt{uv} flag, and the server
-rejects it).
+The browser therefore prompts for the key's PIN
+(Fig.~\ref{fig:fido2-pin}).
+A physically stolen, unlocked security key cannot satisfy this factor
+because the assertion will be missing the \texttt{uv} flag and the
+server rejects it.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.8\columnwidth]{images/fido2-pin}
+  \caption{PIN prompt (user verification) during FIDO2 registration.}
+  \label{fig:fido2-pin}
+\end{figure}
+
+On success the credential appears in the user's helpdesk panel
+(Fig.~\ref{fig:fido2-done}).
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=1.0\columnwidth]{images/fido2-done}
+  \caption{Credential listed after successful FIDO2 registration.}
+  \label{fig:fido2-done}
+\end{figure}
 
 At login the IdP issues a challenge via
 \texttt{/oauth/mfa/<sid>/fido2/start} (bound to the Flask session), the
@@ -123,18 +142,3 @@ browser-side glue (\texttt{idp/static/js/webauthn.js}) calls
 require\_user\_verification=True)}.
 The credential's sign counter is updated on every successful assertion to
 detect cloned authenticators.
-
-\begin{figure}[H]
-  \centering
-  \begin{minipage}[b]{0.47\columnwidth}
-    \imgplaceholder[3cm]{Browser: ``Choose where to save your passkey'' dialog showing USB security key option}
-    \caption{Browser authenticator selection during FIDO2 registration.}
-    \label{fig:fido2-reg}
-  \end{minipage}
-  \hfill
-  \begin{minipage}[b]{0.47\columnwidth}
-    \imgplaceholder[3cm]{Helpdesk: FIDO2 credential listed after successful registration}
-    \caption{Helpdesk: FIDO2 credential listed after registration.}
-    \label{fig:fido2-done}
-  \end{minipage}
-\end{figure}

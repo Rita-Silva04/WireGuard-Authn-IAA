@@ -115,6 +115,16 @@ def stop_stack(remove_images: bool):
         warn("docker compose down exited non-zero — stack may already be stopped")
 
 
+def bring_down_wg0():
+    """Bring down the host-side wg0 so the next startup reloads wg0.conf cleanly."""
+    r = shell("ip link show wg0", check=False)
+    if r.returncode == 0:
+        shell("wg-quick down wg0", check=False)
+        ok("wg0 brought down")
+    else:
+        skip("wg0 not up")
+
+
 def wipe_generated_files():
     step(2, "Delete generated configs and runtime state")
 
@@ -170,9 +180,10 @@ def session_reset():
         ["docker", "exec", IDP_CTR, "python3", "-c",
          "import sqlite3\n"
          "conn = sqlite3.connect('/data/vpnauth.db')\n"
-         "for t in ('wg_peers','oauth_tokens','device_codes','mfa_sessions'):\n"
+         "for t in ('wg_peers','oauth_tokens','device_codes','mfa_sessions','auth_lockouts'):\n"
          "    conn.execute(f'DELETE FROM {t}')\n"
          "conn.execute('UPDATE users SET failed_attempts=0, locked_until=0, last_failure_at=0')\n"
+         "conn.execute(\"DELETE FROM rba_events WHERE event_type IN ('password_fail','totp_fail','fido2_fail','auth_blocked_missing_factor','auth_failed')\")\n"
          "conn.commit()\n"
          "print('done')"
         ],
@@ -220,6 +231,7 @@ def main():
     else:
         stop_stack(remove_images=args.reset)
         if args.reset:
+            bring_down_wg0()
             wipe_generated_files()
 
     print("\n" + "═"*60)

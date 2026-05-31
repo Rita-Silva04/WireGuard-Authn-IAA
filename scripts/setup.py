@@ -161,6 +161,24 @@ def generate_wg_keys(force):
 
     ok(f"Server public key: {pubkey}")
 
+    # Always sync wg0.conf [Interface] PrivateKey from privatekey-server so the
+    # WireGuard interface and srvauthn's Noise-IK key can never drift apart.
+    privkey = read("wireguard", "privatekey-server").strip()
+    wg_conf_path = os.path.join(PROJECT_ROOT, "wireguard", "wg0.conf")
+    wg_conf = read("wireguard", "wg0.conf")
+    wg_conf_patched = re.sub(
+        r"(^\s*PrivateKey\s*=\s*).*",
+        lambda m: m.group(1) + privkey,
+        wg_conf,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    if wg_conf_patched != wg_conf:
+        write(wg_conf_patched, "wireguard", "wg0.conf")
+        ok("wg0.conf [Interface] PrivateKey synced from privatekey-server")
+    else:
+        ok("wg0.conf [Interface] PrivateKey already in sync")
+
     # Patch SERVER_PUBKEY into .env
     env = read(".env")
     env = re.sub(r"SERVER_PUBKEY=.*", f"SERVER_PUBKEY={pubkey}", env)

@@ -187,10 +187,25 @@ def compute_risk(username: str, ip_address: str, user_agent: str = "") -> dict:
     required = _required_factors_for(score)
     missing  = _missing_factors(user_id, required)
 
+    # Short machine-readable signal names derived from reasons
+    _SIGNAL_MAP = [
+        ("First ever login",          "first_login"),
+        ("New IP address",            "new_ip"),
+        ("New ASN",                   "new_asn"),
+        ("failed attempt",            "recent_failures"),
+        ("Unusual hour",              "unusual_hour"),
+    ]
+    signals = [sig for needle, sig in _SIGNAL_MAP if any(needle in r for r in reasons)]
+
+    # Tier label (L1/L2/L3) matching report nomenclature
+    _TIER = {"LOW": "L1", "MED": "L2", "HIGH": "L3"}
+
     return {
         "score":     round(score, 3),
         "score_int": int(round(score * SCORE_SCALE)),  # §2.7 — for PAM
         "level":     risk_label(score),
+        "tier":      _TIER.get(risk_label(score), "L1"),
+        "signals":   signals,
         "factors":   None if missing else required,
         "reasons":   reasons,
         "missing":   missing,

@@ -24,8 +24,8 @@ We solve this by building a login layer on top of WireGuard: the user
 authenticates through a browser-based MFA flow gated by a risk engine,
 and only on success does the gateway generate and hand over the
 per-session WireGuard parameters so the tunnel can come up.
-The entire stack — login client, gateway daemon, identity provider, PAM
-module, and helpdesk — runs from a single \texttt{docker compose up},
+The entire stack, login client, gateway daemon, identity provider, PAM
+module, and helpdesk, runs from a single \texttt{docker compose up},
 with the gateway's WireGuard public key as the only trust anchor.
 
 \subsection{Mapping to Project Requirements}

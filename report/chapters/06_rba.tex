@@ -55,4 +55,5 @@ On successful authentication the client IP and ASN are recorded in
 attract a lower score.
 All authentication events (start, per-factor outcome, success/failure) are
 written to \texttt{rba\_events}, both for audit and for the recent-failures
-signal.
+signal, which is evaluated at the \emph{start} of each new login attempt
+and therefore reflects failures from previous sessions, not the current one.

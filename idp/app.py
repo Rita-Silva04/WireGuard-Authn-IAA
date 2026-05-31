@@ -31,6 +31,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
 )
+log_rba = logging.getLogger("rba")
 
 from flask import (Flask, request, jsonify, render_template,
                    redirect, url_for, session, Response)
@@ -268,6 +269,8 @@ def device_verify():
     ip  = row["client_ip"] or _request_ip()
     ua  = _request_user_agent()
     rba = compute_risk(username, ip, ua)
+    log_rba.info("user=%s score=%.2f signals=%s tier=%s",
+                 username, rba["score"], rba["signals"], rba["tier"])
 
     # §1.4 — strict policy: reject if the user lacks a required factor.
     if rba["factors"] is None:

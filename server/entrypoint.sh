@@ -24,9 +24,18 @@ if ! [ -f /app/server/srvauthn.conf ]; then
     exit 1
 fi
 
-# Bring up wg0 if not already running.
+# Bring up wg0, or restart it if the running key doesn't match wg0.conf.
 if ip link show wg0 >/dev/null 2>&1; then
-    echo "[entrypoint] wg0 already up - leaving alone"
+    CONF_PRIV=$(grep -m1 '^PrivateKey' /etc/wireguard/wg0.conf | awk '{print $3}')
+    CONF_PUB=$(printf '%s' "$CONF_PRIV" | wg pubkey 2>/dev/null || true)
+    LIVE_PUB=$(wg show wg0 public-key 2>/dev/null || true)
+    if [ -n "$CONF_PUB" ] && [ "$CONF_PUB" != "$LIVE_PUB" ]; then
+        echo "[entrypoint] wg0 key mismatch (live=$LIVE_PUB conf=$CONF_PUB) — restarting"
+        wg-quick down wg0 2>/dev/null || true
+        wg-quick up wg0
+    else
+        echo "[entrypoint] wg0 already up with correct key - leaving alone"
+    fi
 else
     echo "[entrypoint] bringing up wg0..."
     wg-quick up wg0

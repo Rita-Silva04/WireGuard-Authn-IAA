@@ -33,29 +33,27 @@ server-side containers (\texttt{vpn-idp}, \texttt{vpn-helpdesk},
 password and TOTP.
 The optional client container (\texttt{vpn-client}) is brought up
 separately when running the authentication scenarios.
-Fig.~\ref{fig:setup} shows a clean run and Fig.~\ref{fig:docker} confirms
-the containers are up with the expected port bindings.
+Figs.~\ref{fig:setup-top} and~\ref{fig:setup-bottom} show a clean run
+and Fig.~\ref{fig:docker} confirms the containers are up with the
+expected port bindings.
 
 \begin{figure}[H]
   \centering
-  \begin{minipage}[b]{0.47\columnwidth}
-    \imgplaceholder[5cm]{Terminal: \texttt{setup.py} — header + Steps 1–4c with checkmarks}
-    \caption{\texttt{setup.py}: config and key generation (steps 1–4).}
-    \label{fig:setup-top}
-  \end{minipage}
-  \hfill
-  \begin{minipage}[b]{0.47\columnwidth}
-    \imgplaceholder[5cm]{Terminal: \texttt{setup.py} — Docker summary + Step 6 + ``Setup complete!'' banner}
-    \caption{\texttt{setup.py}: stack up and user enrolled (step 5–6).}
-    \label{fig:setup-bottom}
-  \end{minipage}
-  \caption*{\texttt{scripts/setup.py} completing all steps (split view).}
-  \label{fig:setup}
+  \includegraphics[width=1.0\columnwidth]{images/setup-top}
+  \caption{\texttt{setup.py}: config and key generation (steps 1--4).}
+  \label{fig:setup-top}
 \end{figure}
 
 \begin{figure}[H]
   \centering
-  \imgplaceholder[3.5cm]{\texttt{docker ps} showing the three running containers with their port bindings}
+  \includegraphics[width=1.0\columnwidth]{images/setup-bottom}
+  \caption{\texttt{setup.py}: stack up and user enrolled (steps 5--6).}
+  \label{fig:setup-bottom}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=1.0\columnwidth]{images/docker}
   \caption{Running containers after setup, with port bindings.}
   \label{fig:docker}
 \end{figure}
@@ -74,17 +72,16 @@ running.
 
 \begin{figure}[H]
   \centering
-  \begin{minipage}[b]{0.47\columnwidth}
-    \imgplaceholder[3cm]{Helpdesk landing page listing \texttt{alice}}
-    \caption{Helpdesk user list.}
-    \label{fig:helpdesk-users}
-  \end{minipage}
-  \hfill
-  \begin{minipage}[b]{0.47\columnwidth}
-    \imgplaceholder[3cm]{\texttt{alice} credential panel with all three factors enrolled}
-    \caption{Per-user panel, all factors enrolled.}
-    \label{fig:helpdesk-profile}
-  \end{minipage}
+  \includegraphics[width=1.0\columnwidth]{images/helpdesk-users}
+  \caption{Helpdesk user list.}
+  \label{fig:helpdesk-users}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=1.0\columnwidth]{images/helpdesk-profile}
+  \caption{Per-user panel, all factors enrolled.}
+  \label{fig:helpdesk-profile}
 \end{figure}
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -102,53 +99,45 @@ docker exec vpn-client python3 -u /workspace/client/userauthn.py \
 A first login from a clean state scores 0.30 (the first-ever-login
 signal), placing \texttt{alice} at tier L2: password and TOTP.
 \texttt{UserAuthn} generates the PSK, opens the Noise-IK tunnel, and
-prints the device code (Fig.~\ref{fig:userauthn-start}); the browser
-opens the OAuth device page with the code pre-filled
-(Fig.~\ref{fig:browser-device}) and the user completes two factors
-(Figs.~\ref{fig:mfa-password} and~\ref{fig:mfa-totp}).
-On success the browser shows the completion page
-(Fig.~\ref{fig:auth-complete-l2}) and the terminal shows the leased
-tunnel IP (Fig.~\ref{fig:vpn-connected-l2}).
+prints the device code (Fig.~\ref{fig:userauthn-start}).
 
 \begin{figure}[H]
   \centering
-  \begin{minipage}[b]{0.47\columnwidth}
-    % HOW TO TAKE: run userauthn.py (docker exec or directly).
-    % Capture the terminal just after it prints the device code:
-    %   PSK generated, Noise-IK tunnel up, proxy on 127.0.0.1:18080,
-    %   "Your code: XXXX-XXXX", browser opened.
-    \imgplaceholder[3.5cm]{\texttt{userauthn.py} terminal: PSK generated, tunnel up, device code printed}
-    \caption{\texttt{UserAuthn} terminal at authentication start.}
-    \label{fig:userauthn-start}
-  \end{minipage}
-  \hfill
-  \begin{minipage}[b]{0.47\columnwidth}
-    % HOW TO TAKE: the browser opens http://127.0.0.1:18080/oauth/device?code=...
-    % Capture the OAuth device page with the activation code pre-filled.
-    \imgplaceholder[3.5cm]{Browser: OAuth device page with activation code pre-filled}
-    \caption{OAuth device page — code pre-filled via redirect URI.}
-    \label{fig:browser-device}
-  \end{minipage}
+  \includegraphics[width=1.0\columnwidth]{images/userauthn-start}
+  \caption{\texttt{UserAuthn} terminal at authentication start.}
+  \label{fig:userauthn-start}
 \end{figure}
 
+The browser opens the OAuth device page with the code pre-filled
+(Fig.~\ref{fig:browser-device}).
+
 \begin{figure}[H]
   \centering
-  \begin{minipage}[b]{0.47\columnwidth}
-    % HOW TO TAKE: after correct password and TOTP, the browser shows
-    % "Authentication Complete". Capture this page.
-    \imgplaceholder[3cm]{Browser: ``Authentication Complete'' success page (L2)}
-    \caption{Authentication complete after password and TOTP.}
-    \label{fig:auth-complete-l2}
-  \end{minipage}
-  \hfill
-  \begin{minipage}[b]{0.47\columnwidth}
-    % HOW TO TAKE: back in the userauthn.py terminal, after the VPN
-    % config is received and applied, capture the "VPN Connected!"
-    % banner with the leased IP (e.g. 10.10.10.2).
-    \imgplaceholder[3cm]{\texttt{userauthn.py}: ``VPN Connected!'' with leased IP \texttt{10.10.10.2}}
-    \caption{Client terminal after a successful L2 login.}
-    \label{fig:vpn-connected-l2}
-  \end{minipage}
+  \includegraphics[width=0.8\columnwidth]{images/browser-device}
+  \caption{OAuth device page --- code pre-filled via redirect URI.}
+  \label{fig:browser-device}
+\end{figure}
+
+The user completes the password factor (Fig.~\ref{fig:mfa-password})
+and the TOTP factor (Fig.~\ref{fig:mfa-totp}).
+On success the browser shows the completion page
+(Fig.~\ref{fig:auth-complete-l2}).
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.9\columnwidth]{images/auth-complete-l2}
+  \caption{Authentication complete after password and TOTP.}
+  \label{fig:auth-complete-l2}
+\end{figure}
+
+The terminal then shows the leased tunnel IP, confirming the WireGuard
+interface is up (Fig.~\ref{fig:vpn-connected-l2}).
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.9\columnwidth]{images/vpn-connected-l2}
+  \caption{Client terminal after a successful L2 login.}
+  \label{fig:vpn-connected-l2}
 \end{figure}
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -164,27 +153,22 @@ To reproduce: immediately after the L2 session, run
 and session tables while preserving \texttt{rba\_ip\_history}, then run
 \texttt{userauthn.py} again.
 The browser shows only the password factor (Fig.~\ref{fig:mfa-l1-password});
-the TOTP step does not appear, and the tunnel comes up on completion
-(Fig.~\ref{fig:auth-complete-l1}).
+the TOTP step does not appear.
 
 \begin{figure}[H]
   \centering
-  \begin{minipage}[b]{0.47\columnwidth}
-    % HOW TO TAKE: during the L1 login, capture the browser showing ONLY
-    % the password factor page — there should be no TOTP step afterwards.
-    \imgplaceholder[3cm]{Browser: password factor only — no TOTP step (L1)}
-    \caption{Password-only factor page during an L1 login.}
-    \label{fig:mfa-l1-password}
-  \end{minipage}
-  \hfill
-  \begin{minipage}[b]{0.47\columnwidth}
-    % HOW TO TAKE: after the password factor succeeds, capture the
-    % "Authentication Complete" page and the userauthn.py "VPN Connected!"
-    % terminal (same as L2 but showing only one factor was required).
-    \imgplaceholder[3cm]{Browser: ``Authentication Complete'' (L1) and \texttt{userauthn.py}: ``VPN Connected!''}
-    \caption{Authentication complete after password only (L1).}
-    \label{fig:auth-complete-l1}
-  \end{minipage}
+  \includegraphics[width=0.8\columnwidth]{images/mfa-l1-password}
+  \caption{Password-only factor page during an L1 login.}
+  \label{fig:mfa-l1-password}
+\end{figure}
+
+The tunnel comes up on completion (Fig.~\ref{fig:auth-complete-l1}).
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.9\columnwidth]{images/auth-complete-l1}
+  \caption{Authentication complete after password only (L1).}
+  \label{fig:auth-complete-l1}
 \end{figure}
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -195,44 +179,36 @@ The FIDO2 factor is required at tier L3, reached when the risk score is
 at least 0.60.
 To reproduce: reset the DB auth tables (\texttt{teardown.py --reset}),
 ensure \texttt{alice} has a FIDO2 credential enrolled, then make
-\emph{four failed password attempts} before the real login.
+\emph{four failed password attempts in separate sessions} before the real
+login (the risk score is computed at session start, so only failures from
+prior sessions count toward it).
 Four failures add $4 \times 0.10 = 0.40$ to the first-login baseline of
 $0.30$, giving a score of $0.70 \geq 0.60$.
 The virtual FIDO device must be running.
 After password and TOTP pass, the browser presents the FIDO2 assertion
-dialog (Fig.~\ref{fig:mfa-fido2-login}); on success the completion page
-appears (Fig.~\ref{fig:auth-complete-l3}) and the terminal confirms the
-tunnel is up (Fig.~\ref{fig:vpn-connected-l3}).
+dialog (Fig.~\ref{fig:mfa-fido2-login}).
 
 \begin{figure}[H]
   \centering
-  \begin{minipage}[b]{0.47\columnwidth}
-    % HOW TO TAKE (CRITICAL): during the L3 login, after password and
-    % TOTP both pass, the IdP shows the FIDO2 factor page. The page
-    % calls navigator.credentials.get() and the browser shows a WebAuthn
-    % dialog asking the user to interact with the security key.
-    % Capture EITHER the IdP's FIDO2 step page OR the browser's native
-    % WebAuthn modal. This must be an AUTHENTICATION session, not
-    % a helpdesk registration.
-    \imgplaceholder[3.5cm]{Browser: FIDO2 factor step during L3 VPN login — WebAuthn assertion dialog}
-    \caption{FIDO2 factor step during an L3 VPN login.}
-    \label{fig:mfa-fido2-login}
-  \end{minipage}
-  \hfill
-  \begin{minipage}[b]{0.47\columnwidth}
-    % HOW TO TAKE: after all three factors complete in the L3 session,
-    % capture the "Authentication Complete" success page.
-    \imgplaceholder[3.5cm]{Browser: ``Authentication Complete'' after password, TOTP, and FIDO2}
-    \caption{Authentication complete after all three L3 factors.}
-    \label{fig:auth-complete-l3}
-  \end{minipage}
+  \includegraphics[width=0.85\columnwidth]{images/mfa-fido2-login}
+  \caption{FIDO2 factor step during an L3 VPN login.}
+  \label{fig:mfa-fido2-login}
 \end{figure}
 
+On success the completion page appears (Fig.~\ref{fig:auth-complete-l3}).
+
 \begin{figure}[H]
   \centering
-  % HOW TO TAKE: capture userauthn.py terminal after the L3 login,
-  % showing "VPN Connected!" with the leased IP.
-  \imgplaceholder[3cm]{\texttt{userauthn.py}: ``VPN Connected!'' after successful L3 login}
+  \includegraphics[width=0.9\columnwidth]{images/auth-complete-l3}
+  \caption{Authentication complete after all three L3 factors.}
+  \label{fig:auth-complete-l3}
+\end{figure}
+
+The terminal confirms the tunnel is up (Fig.~\ref{fig:vpn-connected-l3}).
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.9\columnwidth]{images/vpn-connected-l3}
   \caption{Client terminal after a successful L3 login.}
   \label{fig:vpn-connected-l3}
 \end{figure}
@@ -244,54 +220,42 @@ After any successful login, \texttt{wg show wg0} inside the
 \texttt{vpn-srvauthn} container lists the provisioned peer with its
 tunnel IP, pre-shared key, and most recent handshake timestamp
 (Fig.~\ref{fig:wg-server}).
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=1.0\columnwidth]{images/wg-server}
+  \caption{Server-side \texttt{wg show wg0} after provisioning.}
+  \label{fig:wg-server}
+\end{figure}
+
 A \texttt{ping} from the client container to the server tunnel address
 \texttt{10.10.10.1} confirms that the tunnel carries traffic end-to-end
 (Fig.~\ref{fig:ping}).
 
 \begin{figure}[H]
   \centering
-  \begin{minipage}[b]{0.47\columnwidth}
-    % HOW TO TAKE: run "docker exec vpn-srvauthn wg show wg0" after a
-    % successful login. Capture output showing:
-    %   interface: wg0, listening port: 51820
-    %   peer: <client pubkey>
-    %     allowed ips: 10.10.10.2/32
-    %     latest handshake: X seconds ago
-    \imgplaceholder[3.5cm]{Server: \texttt{wg show wg0} — provisioned peer, tunnel IP, handshake time}
-    \caption{Server-side \texttt{wg show wg0} after provisioning.}
-    \label{fig:wg-server}
-  \end{minipage}
-  \hfill
-  \begin{minipage}[b]{0.47\columnwidth}
-    % HOW TO TAKE: inside the client container (docker exec -it vpn-client bash),
-    % run "ping -c 3 10.10.10.1" after the VPN is connected.
-    % Capture output showing 3 packets transmitted, 3 received, 0% packet loss.
-    \imgplaceholder[3.5cm]{Client: \texttt{ping -c 3 10.10.10.1} — 3 received, 0\% packet loss}
-    \caption{End-to-end ping through the WireGuard tunnel.}
-    \label{fig:ping}
-  \end{minipage}
+  \includegraphics[width=1.0\columnwidth]{images/ping}
+  \caption{End-to-end ping through the WireGuard tunnel.}
+  \label{fig:ping}
 \end{figure}
 
 % ─────────────────────────────────────────────────────────────────────────────
 \subsection{RBA Score Verification}
 
 The RBA engine logs the computed score and active signals on every login.
-Fig.~\ref{fig:rba-scores} shows the IdP log output for the three scenarios.
-A first-ever login fires only the first-login signal (score~0.30, tier~L2).
+A first-ever login fires only the \texttt{first\_login} signal
+(score~0.30, tier~L2).
 A returning user from a known IP during normal hours fires no signals
 (score~0.00, tier~L1).
-A first login preceded by four failed attempts accumulates
-$0.30 + 4 \times 0.10 = 0.70$, exceeding the L3 threshold of 0.60.
+A first login preceded by four failed attempts in previous sessions
+accumulates $0.30 + 4 \times 0.10 = 0.70$, exceeding the L3 threshold
+of 0.60.
+Fig.~\ref{fig:rba-scores} shows the IdP log output for all three
+scenarios together.
 
 \begin{figure}[H]
   \centering
-  % HOW TO TAKE: run "docker logs vpn-idp 2>&1 | grep -i rba" (or grep "score")
-  % after each scenario. Capture the log lines showing the score and active
-  % signals for each tier, e.g.:
-  %   [rba] user=alice score=0.30 signals=['first_login'] tier=L2
-  %   [rba] user=alice score=0.00 signals=[] tier=L1
-  %   [rba] user=alice score=0.70 signals=['first_login','recent_failures'] tier=L3
-  \imgplaceholder[4.5cm]{\texttt{docker logs vpn-idp} — RBA score lines for L1 (0.00), L2 (0.30), and L3 (0.70)}
+  \includegraphics[width=1.0\columnwidth]{images/rba-scores}
   \caption{IdP log output confirming the RBA score and tier for each scenario.}
   \label{fig:rba-scores}
 \end{figure}
