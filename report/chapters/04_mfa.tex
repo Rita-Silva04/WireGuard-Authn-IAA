@@ -1,0 +1,140 @@
+% ════════════════════════════════════════════════════════════════════════════════
+\section{Multi-Factor Authentication}
+\label{sec:mfa}
+
+We implemented three authentication factors in order of increasing
+robustness: a password challenge-response scheme, TOTP, and FIDO2/WebAuthn.
+Which factors are required for a given login depends on the RBA score
+(Section~\ref{sec:pam}).
+
+\subsection{Helpdesk Enrolment}
+\label{sec:helpdesk}
+Credential management is handled by a separate Flask app,
+\texttt{idp/helpdesk/app.py}, bound to \texttt{127.0.0.1:8081} with
+\texttt{network\_mode: host}.
+Being bound to the loopback interface, it is physically unreachable from
+outside the gateway machine. Its access boundary is enforced by the
+network, not by authentication logic.
+
+The helpdesk shares the same SQLite database as the IdP through a
+bind-mount, so credentials registered here become immediately usable at
+login. It exposes endpoints for all three factors
+(\texttt{/user/<u>/password}, \texttt{/totp}, \texttt{/fido2/start},
+\texttt{/fido2/finish}) plus credential listing and removal.
+
+\subsection{Password (Challenge-Response)}
+\label{sec:mfa-pwd}
+The raw password never leaves the browser.
+
+\textbf{Enrolment:} 
+
+The helpdesk derives a 32-byte verifier with
+scrypt~\cite{rfc7914,percival2009stronger}:
+\[
+v = \text{scrypt}(\mathit{pw},\; s,\; N=2^{14},\; r=8,\; p=1,\; \text{dkLen}=32)
+\]
+where $\mathit{pw}$ is the user's password and $s$ is a 16-byte random
+salt; only $(s, v)$ are stored in the \texttt{passwords} table.
+
+\textbf{Login:} 
+
+When the PAM module requests the password factor, the
+browser fetches \texttt{/oauth/mfa/<sid>/password/challenge}, which returns
+the salt, a fresh 32-byte nonce, and the scrypt parameters.
+A pure-JavaScript scrypt implementation
+(\texttt{idp/static/js/scrypt.js}) recomputes $v'$ in the browser and
+submits
+\[
+\text{proof} = \text{HMAC-SHA256}(v',\; \text{nonce})
+\]
+The server compares against \texttt{HMAC-SHA256(v, nonce)} with
+\texttt{hmac.compare\_digest}.
+The nonce is burned atomically (\texttt{BEGIN IMMEDIATE}) before the
+comparison, so a replay finds the nonce already consumed.
+Fig.~\ref{fig:mfa-password} shows the browser form during this step.
+
+\begin{figure}[H]
+  \centering
+  % HOW TO TAKE: capture the browser password challenge form during a
+  % VPN login. The form shows a password input; the page title should
+  % indicate it is the "Password" step of the MFA flow.
+  \imgplaceholder[3.5cm]{Browser: password challenge-response form during VPN login}
+  \caption{Password step: scrypt and the HMAC proof run client-side.}
+  \label{fig:mfa-password}
+\end{figure}
+
+\subsection{TOTP}
+\label{sec:mfa-totp}
+RFC 6238~\cite{rfc6238}, six digits, 30-second step, $\pm 1$ window, via
+\texttt{pyotp.TOTP.verify(code, valid\_window=1)}.
+
+Enrolment happens at the helpdesk:
+\texttt{POST /user/<u>/totp} generates a fresh secret and shows it as a QR
+code (Fig.~\ref{fig:totp-enrol}). Confirmation requires the user to submit
+a valid code, after which the row in \texttt{totp\_secrets} flips to
+\texttt{confirmed=1}.
+
+The secret is stored encrypted at rest under AES-256-GCM
+(\texttt{common/db.py:\_encrypt}); see Section~\ref{sec:security}.
+At login the browser presents a 6-digit code entry form
+(Fig.~\ref{fig:mfa-totp}).
+
+\begin{figure}[H]
+  \centering
+  \begin{minipage}[b]{0.47\columnwidth}
+    \imgplaceholder[3cm]{Helpdesk: TOTP QR code displayed during enrolment}
+    \caption{TOTP QR code during helpdesk enrolment.}
+    \label{fig:totp-enrol}
+  \end{minipage}
+  \hfill
+  \begin{minipage}[b]{0.47\columnwidth}
+    % HOW TO TAKE: capture the 6-digit TOTP code input form that appears
+    % in the browser during a VPN login (after the password step).
+    \imgplaceholder[3cm]{Browser: TOTP 6-digit code entry during VPN login}
+    \caption{TOTP step during VPN authentication.}
+    \label{fig:mfa-totp}
+  \end{minipage}
+\end{figure}
+
+\subsection{FIDO2 / WebAuthn}
+\label{sec:mfa-fido}
+We use the \texttt{webauthn} (v$\geq$2) Python library on the server and the
+browser's native \texttt{navigator.credentials} API on the client.
+
+Enrolment uses the helpdesk's \texttt{/fido2/start} and
+\texttt{/fido2/finish} endpoints; the browser's WebAuthn dialog asks
+the user to select the authenticator device (Fig.~\ref{fig:fido2-reg}),
+and on success the credential appears in the user's panel
+(Fig.~\ref{fig:fido2-done}).
+
+Both registration and authentication set
+\texttt{UserVerificationRequirement.REQUIRED}, which forces the
+authenticator to validate a local PIN, biometric, or password before
+releasing the credential's private key.
+A physically stolen, unlocked security key therefore cannot satisfy this
+factor (the assertion will be missing the \texttt{uv} flag, and the server
+rejects it).
+
+At login the IdP issues a challenge via
+\texttt{/oauth/mfa/<sid>/fido2/start} (bound to the Flask session), the
+browser-side glue (\texttt{idp/static/js/webauthn.js}) calls
+\texttt{navigator.credentials.get()}, and the assertion is verified with
+\texttt{verify\_authentication\_response(\dots,
+require\_user\_verification=True)}.
+The credential's sign counter is updated on every successful assertion to
+detect cloned authenticators.
+
+\begin{figure}[H]
+  \centering
+  \begin{minipage}[b]{0.47\columnwidth}
+    \imgplaceholder[3cm]{Browser: ``Choose where to save your passkey'' dialog showing USB security key option}
+    \caption{Browser authenticator selection during FIDO2 registration.}
+    \label{fig:fido2-reg}
+  \end{minipage}
+  \hfill
+  \begin{minipage}[b]{0.47\columnwidth}
+    \imgplaceholder[3cm]{Helpdesk: FIDO2 credential listed after successful registration}
+    \caption{Helpdesk: FIDO2 credential listed after registration.}
+    \label{fig:fido2-done}
+  \end{minipage}
+\end{figure}

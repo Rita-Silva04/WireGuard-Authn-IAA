@@ -6,34 +6,34 @@
 <title>{% block title %}VPN Auth{% endblock %}</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-body{font-family:Arial,sans-serif;background:#111;color:#eee;
+body{font-family:Arial,sans-serif;background:#f4f6f8;color:#1a1a1a;
      min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
-.card{background:#1e1e1e;border:1px solid #333;border-radius:12px;
+.card{background:#fff;border:1px solid #e0e0e0;border-radius:12px;
       padding:32px;width:100%;max-width:440px}
 h1{font-size:1.4rem;margin-bottom:6px}
-.sub{color:#888;font-size:.88rem;margin-bottom:24px}
+.sub{color:#777;font-size:.88rem;margin-bottom:24px}
 .field-hint{color:#888;font-size:.82rem;margin-top:7px;margin-bottom:18px;line-height:1.35}
-label{display:block;font-size:.85rem;color:#aaa;margin-bottom:4px;margin-top:14px}
+label{display:block;font-size:.85rem;color:#666;margin-bottom:4px;margin-top:14px}
 input[type=text],input[type=password]{width:100%;padding:10px 14px;
-  background:#2a2a2a;border:1px solid #444;border-radius:8px;color:#fff;font-size:1rem}
-input:focus{outline:2px solid #4f8ef7;border-color:transparent}
+  background:#fff;border:1px solid #ccc;border-radius:8px;color:#1a1a1a;font-size:1rem}
+input:focus{outline:2px solid #1a6fd4;border-color:transparent}
 .btn{display:block;width:100%;padding:11px;border:none;border-radius:8px;
      font-size:.95rem;cursor:pointer;margin-top:14px;font-weight:600;transition:opacity .15s}
 .btn:hover{opacity:.88}
-.btn-primary{background:#4f8ef7;color:#fff}
-.btn-secondary{background:#2a2a2a;color:#ccc;border:1px solid #444}
-.btn-success{background:#27ae60;color:#fff}
-.err{background:#3d1a1a;color:#eb5757;padding:10px 14px;border-radius:8px;
+.btn-primary{background:#1a6fd4;color:#fff}
+.btn-secondary{background:#fff;color:#444;border:1px solid #ccc}
+.btn-success{background:#1a7a3c;color:#fff}
+.err{background:#fde8e8;color:#c0392b;padding:10px 14px;border-radius:8px;
      font-size:.88rem;margin-top:14px}
-.ok{background:#1a3d2b;color:#6fcf97;padding:10px 14px;border-radius:8px;
+.ok{background:#d4edda;color:#1a7a3c;padding:10px 14px;border-radius:8px;
     font-size:.88rem;margin-top:14px}
-.info{background:#1a3a5c;color:#7ec8f5;padding:10px 14px;border-radius:8px;
+.info{background:#e8f0fb;color:#1a4a8a;padding:10px 14px;border-radius:8px;
       font-size:.88rem;margin-top:14px}
-.divider{border:none;border-top:1px solid #333;margin:20px 0}
+.divider{border:none;border-top:1px solid #e0e0e0;margin:20px 0}
 .steps{display:flex;gap:8px;margin-bottom:20px}
-.step{flex:1;height:6px;border-radius:3px;background:#333}
-.step.done{background:#27ae60}
-.step.active{background:#4f8ef7}
+.step{flex:1;height:6px;border-radius:3px;background:#e0e0e0}
+.step.done{background:#1a7a3c}
+.step.active{background:#1a6fd4}
 </style>
 {% block head %}{% endblock %}
 </head>

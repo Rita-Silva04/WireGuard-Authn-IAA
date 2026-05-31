@@ -1,0 +1,77 @@
+% ════════════════════════════════════════════════════════════════════════════════
+\section{Introduction}
+\label{sec:intro}
+
+This report documents our group project for the
+\emph{Identity and Access Management} (IAA) course at the University of
+Aveiro.
+The project brief asks us to design
+and implement \emph{``a secure user authentication protocol for WireGuard
+VPN''}~\cite{donenfeld2017wireguard} together with the supporting client
+and server applications, MFA, RBA, an IdP, a custom PAM module, and a
+helpdesk enrolment interface.
+This report describes what we built, the design decisions behind each
+component, and where in the codebase each project requirement is
+satisfied.
+
+\subsection{Problem Statement}
+WireGuard tunnels packets between peers that already know each other's
+Curve25519 public key, private tunnel IP, and pre-shared key.
+For a host-to-gateway deployment serving many users, the gateway must
+pre-configure all six per-peer parameters before any client can connect,
+and clients must avoid private IP collisions out-of-band.
+We solve this by building a login layer on top of WireGuard: the user
+authenticates through a browser-based MFA flow gated by a risk engine,
+and only on success does the gateway generate and hand over the
+per-session WireGuard parameters so the tunnel can come up.
+The entire stack — login client, gateway daemon, identity provider, PAM
+module, and helpdesk — runs from a single \texttt{docker compose up},
+with the gateway's WireGuard public key as the only trust anchor.
+
+\subsection{Mapping to Project Requirements}
+Table~\ref{tab:compliance} maps every mandatory project requirement to
+the section of this report and the file in the codebase that implements
+it.
+
+\begin{table}[H]
+\centering
+\caption{Project requirements vs.\ where they are implemented.}
+\label{tab:compliance}
+\renewcommand{\arraystretch}{1.15}
+\scriptsize
+\begin{tabular}{p{3.0cm}p{1.2cm}p{3.2cm}}
+\toprule
+\textbf{Requirement} & \textbf{Section} & \textbf{Code location} \\
+\midrule
+UserAuthn application                        & \ref{sec:protocol} & \texttt{client/userauthn.py} \\
+SrvAuthn application                         & \ref{sec:protocol} & \texttt{server/srvauthn.py} \\
+Six WG parameters per side                   & \ref{sec:wgparams} & \texttt{server/srvauthn.py}, \texttt{common/db.py} \\
+WG public key as source of trust             & \ref{sec:trust}    & \texttt{common/noise.py} \\
+IdP (OAuth 2.0)                              & \ref{sec:protocol} & \texttt{idp/app.py} \\
+HTTP-over-secure-tunnel to IdP               & \ref{sec:proxy}    & \texttt{client/proxy.py}, \texttt{server/proxy.py} \\
+OAuth Device Authorization Grant             & \ref{sec:protocol} & \texttt{idp/app.py} \\
+MFA: password (challenge-response)           & \ref{sec:mfa-pwd}  & \texttt{idp/app.py}, \texttt{idp/static/js/} \\
+MFA: TOTP                                    & \ref{sec:mfa-totp} & \texttt{idp/app.py}, \texttt{common/db.py} \\
+MFA: FIDO2                                   & \ref{sec:mfa-fido} & \texttt{idp/app.py} \\
+RBA (IP, ASN, failures, time)                & \ref{sec:rba}      & \texttt{idp/rba.py} \\
+PAM module orchestrating MFA+RBA             & \ref{sec:pam}      & \texttt{idp/pam\_iaa/src/pam\_vpnmfa.c} \\
+Helpdesk enrolment interface                 & \ref{sec:helpdesk} & \texttt{idp/helpdesk/app.py} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Report Structure}
+Section~\ref{sec:architecture} gives the system architecture and
+trust model.
+Section~\ref{sec:protocol} walks through the authentication protocol
+end-to-end and shows how the six WireGuard parameters per side are
+assigned.
+Section~\ref{sec:mfa} covers the three MFA factors and the helpdesk
+enrolment interface.
+Section~\ref{sec:pam} describes the custom C PAM module.
+Section~\ref{sec:rba} describes the RBA engine.
+Section~\ref{sec:security} covers the additional security hardening
+measures we implemented on top of the core functionality.
+Section~\ref{sec:evaluation} demonstrates that the system works end-to-end.
+Section~\ref{sec:conclusion} concludes and notes what is intentionally not
+implemented.

@@ -996,13 +996,21 @@ def get_oauth_client(client_id: str):
 
 
 def ensure_default_client():
-    """Create the default SrvAuthn OAuth client if it doesn't exist."""
+    """Create or refresh the default SrvAuthn OAuth client.
+
+    The secret tracks ``OAUTH_CLIENT_SECRET`` from the environment, so a
+    ``setup.py --force`` that regenerates ``.env`` does not leave the DB
+    holding a stale secret (which would cause every ``/oauth/device/code``
+    call to fail with ``invalid_client``).
+    """
     client_secret = os.environ.get("OAUTH_CLIENT_SECRET", "srvauthn-secret")
     with db() as conn:
         conn.execute("""
-            INSERT OR IGNORE INTO oauth_clients
-            (client_id, client_secret, name, scopes)
+            INSERT INTO oauth_clients
+                (client_id, client_secret, name, scopes)
             VALUES ('srvauthn', ?, 'SrvAuthn Client', 'vpn')
+            ON CONFLICT(client_id) DO UPDATE SET
+                client_secret = excluded.client_secret
         """, (client_secret,))
 
 

@@ -29,11 +29,11 @@
     const status = document.getElementById("pw-status");
     const button = form.querySelector("button[type='submit']");
     button.disabled = true;
-    status.textContent = "🔒 Computing password proof — this may take a moment…";
+    status.textContent = "Computing password proof — this may take a moment…";
 
     const password = form.password.value;
     if (!password) {
-      status.textContent = "❌ Password required.";
+      status.textContent = "Password required.";
       button.disabled = false;
       return false;
     }
@@ -82,7 +82,7 @@
       submission.submit();
     } catch (err) {
       console.error(err);
-      status.textContent = `❌ ${err.message}`;
+      status.textContent = err.message;
       button.disabled = false;
     }
     return false;

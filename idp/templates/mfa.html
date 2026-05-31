@@ -8,7 +8,7 @@
 {% endif %}
 {% endblock %}
 {% block content %}
-<h1>🔐 Verify Your Identity</h1>
+<h1>Verify Your Identity</h1>
 <p class="sub">Logged in as <strong>{{ username }}</strong></p>
 
 <!-- Progress indicators -->
@@ -63,7 +63,7 @@
 <p class="info">Step: Touch your YubiKey / security key</p>
 <button class="btn btn-primary" id="fido2-btn"
         onclick="startFido2('{{ session_id }}')">
-  🔑 Touch YubiKey
+  Touch YubiKey
 </button>
 <div id="fido2-msg"></div>
 {% endif %}

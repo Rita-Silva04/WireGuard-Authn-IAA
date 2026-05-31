@@ -1,0 +1,64 @@
+% ════════════════════════════════════════════════════════════════════════════════
+\section{Additional Security Hardening}
+\label{sec:security}
+
+Beyond the core authentication requirements we implemented five additional
+hardening measures, each described below.
+
+\subsection{Token Hygiene (B1)}
+OAuth access tokens are 48-byte values produced by
+\texttt{secrets.token\_urlsafe}.
+Only their SHA-256 hash is stored; the plaintext appears only in the
+\texttt{POST /oauth/token} response.
+Tokens have a 60-second TTL and are single-use:
+\texttt{GET /oauth/userinfo} flips \texttt{used\_at} atomically inside a
+\texttt{BEGIN IMMEDIATE} transaction before any other work, so a
+concurrent or replayed call sees \texttt{used\_at $\neq$ NULL} and
+returns 401. A database leak therefore exposes zero usable tokens.
+
+\subsection{Account Lockout (B2)}
+Five failed factor verifications within a 5-minute window lock the account
+for 15 minutes.
+The lockout check runs at the top of every MFA route, before any
+cryptographic work, so brute-force attempts are cheap to refuse.
+Lockout is per-account (not per-IP), so rotating source addresses does not
+help an attacker.
+The lock window is not extended by further failures during the locked
+period since that would let an attacker weaponise the policy into a denial of
+service against legitimate users.
+Fig.~\ref{fig:lockout} shows the error page returned on a login attempt
+against a locked account.
+
+\begin{figure}[H]
+  \centering
+  % HOW TO TAKE: during an MFA session, submit five incorrect passwords.
+  % Then start a new login — the IdP should immediately return a lockout
+  % error page showing the account is locked and when it will be released.
+  \imgplaceholder[3cm]{Browser: account locked error page with ``locked until'' timestamp}
+  \caption{Account locked after five failed factor verifications.}
+  \label{fig:lockout}
+\end{figure}
+
+\subsection{Encrypted TOTP Secrets at Rest (B3)}
+TOTP secrets are stored as
+$\text{nonce}_{12} \,\|\, \text{ciphertext} \,\|\, \text{tag}_{16}$
+under AES-256-GCM.
+The 32-byte master key is loaded from \texttt{IAA\_MASTER\_KEY} and
+validated at startup; if the variable is missing, empty, or contains a
+placeholder value, the process exits with code~78.
+
+\subsection{Peer Lease Expiry (B4)}
+Every row in \texttt{wg\_peers} carries an \texttt{expires\_at} timestamp
+(default 24\,h, configurable in \texttt{srvauthn.conf}).
+A daemon thread in \texttt{server/leases.py} polls every 60 seconds, removes
+expired peers from the \texttt{wg0} interface via \texttt{wg set wg0 peer
+<pub> remove}, and marks the row inactive.
+This limits how long a compromised or abandoned session remains active on
+the gateway.
+
+\subsection{FIDO2 User Verification Required (B5)}
+Both the helpdesk registration and the login flow set
+\texttt{user\_verification=REQUIRED} for all WebAuthn operations.
+The library default is \texttt{PREFERRED}, which silently falls back to
+presence-only verification; \texttt{REQUIRED} ensures a PIN or biometric
+check is always performed regardless of device capability.

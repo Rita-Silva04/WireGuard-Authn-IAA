@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Helpdesk — Users{% endblock %}
 {% block content %}
-<h1>🛠 VPN Helpdesk</h1>
+<h1>VPN Helpdesk</h1>
 <p class="sub">User enrolment and credential management</p>
 
 <div class="card">
@@ -26,13 +26,13 @@
     <tr>
       <td><a href="/user/{{ u.username }}">{{ u.username }}</a></td>
       <td>{{ u.display_name }}</td>
-      <td style="color:#555;font-size:.82rem">{{ u.created_at[:10] }}</td>
+      <td style="color:#777;font-size:.82rem">{{ u.created_at[:10] }}</td>
       <td><a href="/user/{{ u.username }}" class="btn btn-secondary btn-sm">Manage</a></td>
     </tr>
     {% endfor %}
   </table>
   {% else %}
-  <p style="color:#555;font-size:.9rem">No users yet.</p>
+  <p style="color:#777;font-size:.9rem">No users yet.</p>
   {% endif %}
 </div>
 {% endblock %}

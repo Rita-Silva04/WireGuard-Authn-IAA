@@ -1,0 +1,170 @@
+% ════════════════════════════════════════════════════════════════════════════════
+\section{Authentication Protocol}
+\label{sec:protocol}
+
+This section describes the protocol end-to-end, then shows how each
+WireGuard parameter is produced and by which component.
+
+\subsection{The Auth Tunnel (Noise-IK)}
+\label{sec:noise}
+All HTTP traffic between \texttt{UserAuthn} and the IdP passes through a
+hand-built secure tunnel so the client does not need to trust a separate
+TLS certificate.
+We chose Noise-IK over TLS specifically because Noise-IK lets us reuse the
+gateway's WireGuard public key as the responder identity, collapsing the
+auth tunnel's trust anchor and the VPN data-plane trust anchor into one.
+
+\texttt{common/noise.py} is a from-scratch implementation of the Noise-IK
+handshake (Noise Protocol Framework~\cite{perrin2018noise}, revision~34) over
+\texttt{cryptography.hazmat} primitives only: X25519~\cite{x25519rfc},
+ChaCha20-Poly1305~\cite{rfc8439}, BLAKE2s~\cite{blake2}.
+No third-party Noise library was used.
+
+The IK pattern is a two-message handshake: in message~1 the initiator sends
+its ephemeral and (encrypted) static public keys plus an encrypted payload;
+in message~2 the responder replies with its ephemeral and an encrypted
+payload, completing the four DH operations $es$, $ss$, $ee$, $se$.
+After the handshake, both sides hold a pair of ChaCha20-Poly1305
+\texttt{CipherState} objects (one per direction), and frames are exchanged
+with a 4-byte big-endian length prefix (\texttt{common/framing.py}).
+
+\subsection{End-to-End Flow}
+The complete protocol proceeds in nine steps
+(Fig.~\ref{fig:sequence} in Appendix~\ref{sec:appendix-sequence}):
+
+\begin{enumerate}
+  \item \texttt{UserAuthn} generates a fresh 32-byte PSK via
+    \texttt{wg genpsk} on the client side.
+  \item \texttt{UserAuthn} opens a TCP connection to \texttt{SrvAuthn} on
+    port 9999 and runs the Noise-IK handshake. The responder static key is
+    the server's WireGuard public key from the client's
+    \texttt{base.conf}.
+  \item Over the encrypted tunnel, \texttt{UserAuthn} sends a JSON hello
+    containing service tag (\texttt{"auth"}), username, PSK, and target
+    WireGuard interface name. \texttt{SrvAuthn} validates the PSK shape
+    (32-byte base64) before any further processing.
+  \item \texttt{SrvAuthn} calls \texttt{POST /oauth/device/code} at the
+    IdP, attaching the username as a login hint and the client's source IP
+    for the RBA engine.
+  \item \texttt{SrvAuthn} returns \texttt{\{user\_code, verification\_uri\}}
+    to the client over the tunnel; \texttt{UserAuthn} opens the URI in the
+    default browser.
+  \item The browser reaches the IdP through the local HTTP proxy
+    (Section~\ref{sec:proxy}). The user submits the device code; the IdP
+    starts the PAM-orchestrated MFA sequence (Section~\ref{sec:pam}).
+  \item \texttt{SrvAuthn} polls \texttt{POST /oauth/token} every five
+    seconds until the IdP returns an access token.
+  \item \texttt{SrvAuthn} calls \texttt{GET /oauth/userinfo} with the
+    bearer token (single-use; see section~\ref{sec:security}) and receives the
+    authenticated username.
+  \item \texttt{SrvAuthn} generates a fresh WG keypair
+    (\texttt{wg genkey | wg pubkey}), leases the next free IP from
+    \texttt{wg\_peers} inside a \texttt{BEGIN IMMEDIATE} transaction,
+    registers the new peer with \texttt{wg set wg0 peer~\dots}, and sends
+    the full WG config back over the tunnel.
+    \texttt{UserAuthn} writes \texttt{/etc/wireguard/wg0.conf} and runs
+    \texttt{wg-quick up wg0}.
+\end{enumerate}
+
+
+\subsection{Why OAuth Device Authorization Grant}
+\texttt{UserAuthn} is a terminal application and cannot expose an HTTP
+redirect URI, so a standard authorization-code flow is not an option.
+The Device Authorization Grant (RFC~8628~\cite{rfc8628}) solves this by
+having the terminal poll for a token while the user completes the flow in
+a separate browser window, keeping the CLI and the browser completely
+decoupled.
+
+\subsection{The Local HTTP Proxy}
+\label{sec:proxy}
+To keep the browser flow on the same trust anchor as the auth tunnel,
+\texttt{UserAuthn} listens on \texttt{127.0.0.1:18080}
+(\texttt{client/proxy.py}); every browser connection opens a fresh Noise-IK
+tunnel to \texttt{SrvAuthn} with the first frame
+\texttt{\{"service":"proxy"\}}, and \texttt{server/proxy.py} pumps bytes
+between the tunnel and the IdP at \texttt{localhost:8080}.
+
+The IdP's \texttt{ORIGIN} is set to \texttt{http://localhost:18080}, so
+every URI the IdP generates (including the OAuth
+\texttt{verification\_uri\_complete}) points at the proxy.
+The browser's effective trust anchor is therefore the same WireGuard
+public key, just expressed through a different pipe.
+
+WebAuthn's \texttt{RP\_ID} is \texttt{localhost}, which covers both the
+proxy origin (\texttt{http://localhost:18080}) and the helpdesk's
+\texttt{http://localhost:8081}, so security-key credentials registered
+via the helpdesk validate at login without re-enrolment.
+Using \texttt{localhost} rather than the numeric \texttt{127.0.0.1} is
+required: browsers treat \texttt{localhost} as a secure context for
+WebAuthn purposes, but do not consistently extend that treatment to
+the IP literal.
+
+\subsection{WireGuard Parameter Assignment}
+\label{sec:wgparams}
+A WireGuard peer requires six configuration values per side (client and
+server).
+Tables~\ref{tab:wgparams-client} and~\ref{tab:wgparams-server} show which component produces each one and how.
+
+\begin{table}[H]
+\centering
+\caption{WireGuard parameters written to the client}
+\label{tab:wgparams-client}
+\renewcommand{\arraystretch}{1.2}
+\scriptsize
+\begin{tabular}{p{3.3cm}p{4.2cm}}
+\toprule
+\textbf{Parameter} & \textbf{How produced} \\
+\midrule
+1.\ Client secret key        & \texttt{wg genkey} on the server, shipped over Noise-IK \\
+2.\ Client tunnel IP         & \texttt{db.lease\_next\_ip} (atomic) on the server \\
+3.\ Server public key        & Pre-installed in \texttt{base.conf} \\
+4.\ Server public IP         & Pre-installed in \texttt{base.conf} \\
+5.\ Server UDP port          & Pre-installed in \texttt{base.conf} \\
+6.\ Pre-shared key           & \texttt{wg genpsk} on the client, sent in the hello \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{WireGuard parameters applied on the server}
+\label{tab:wgparams-server}
+\renewcommand{\arraystretch}{1.2}
+\scriptsize
+\begin{tabular}{p{3.3cm}p{4.2cm}}
+\toprule
+\textbf{Parameter} & \textbf{How produced} \\
+\midrule
+1.\ Server secret key        & \texttt{/etc/wireguard/privatekey-server} (generated once at setup) \\
+2.\ Server tunnel IP         & \texttt{wg0.conf} \texttt{Address = 10.10.10.1/24} (written by \texttt{scripts/setup.py}) \\
+3.\ Server UDP port          & \texttt{srvauthn.conf} (\texttt{wg\_listen\_port}, default 51820) \\
+4.\ Client public key        & \texttt{wg pubkey} on the server, then \texttt{wg set} \\
+5.\ Client allowed IP        & Same lease as client param~2 \\
+6.\ Pre-shared key           & Echo of client-supplied PSK \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The PSK (client parameter~6) is generated locally by \texttt{UserAuthn}
+before the tunnel opens; the keypair and leased IP (client parameters~1
+and~2) are created by \texttt{SrvAuthn} after authentication; the server's
+public key, public IP, and listen port (client parameters~3--5) are
+pre-distributed in \texttt{base.conf} and serve as the client's only
+required prior knowledge.
+
+One deliberate choice concerns the server tunnel IP (server parameter~2):
+rather than an explicit field in \texttt{srvauthn.conf}, the server's
+address (\texttt{10.10.10.1/24}) is written directly into
+\texttt{wg0.conf} by \texttt{scripts/setup.py}, following standard
+\texttt{wg-quick} convention.
+\texttt{srvauthn.conf} carries \texttt{internal\_subnet = 10.10.10.0/24},
+which \texttt{SrvAuthn} uses only for client IP lease allocation (starting
+from \texttt{.2}); the server permanently holds \texttt{.1}.
+
+\subsection{Lease Lifecycle}
+Every row in \texttt{wg\_peers} carries an \texttt{expires\_at}
+(default 24~h, configurable in \texttt{srvauthn.conf}).
+A daemon thread in \texttt{server/leases.py} polls every 60 seconds,
+finds active rows with \texttt{expires\_at < now}, runs
+\texttt{wg set wg0 peer <pub> remove}, and marks the row inactive.
+Provisioning is the only insert path; the sweeper is the only delete path.

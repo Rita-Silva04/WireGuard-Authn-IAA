@@ -1,0 +1,66 @@
+% ════════════════════════════════════════════════════════════════════════════════
+\section{Conclusion}
+\label{sec:conclusion}
+
+We built a complete user-authentication layer for WireGuard:
+a \texttt{UserAuthn} client and \texttt{SrvAuthn} gateway communicating
+through a hand-implemented Noise-IK tunnel anchored on the gateway's
+WireGuard public key; an OAuth~2.0 Device Authorization Grant IdP that
+hosts three MFA factors (password challenge-response, TOTP, FIDO2);
+a custom C PAM module that selects the factor sequence from a runtime
+risk score; an RBA engine driven by IP history, ASN changes, recent
+failures, and time-of-day; and a loopback-only helpdesk for enrolment.
+All twelve WireGuard parameters (six per side) are produced and applied
+dynamically on each login, as shown in Tables~\ref{tab:wgparams-client} and~\ref{tab:wgparams-server}.
+
+Beyond the core functionality, we implemented five additional security
+hardening measures (Section~\ref{sec:security}).
+The repository ships with \texttt{scripts/setup.py} and
+\texttt{scripts/teardown.py} and all three evaluation scenarios are
+reproducible as described in Section~\ref{sec:evaluation}.
+
+\subsection{Features Not Implemented}
+No mandatory feature is left unimplemented.
+Two deliberate implementation choices deviate slightly from the most
+literal reading of the spec:
+
+\begin{itemize}
+  \item \textbf{Server tunnel IP in \texttt{srvauthn.conf}:}
+    The spec asks the server base config to carry the server's own tunnel
+    IP as an explicit parameter.
+    We set it in \texttt{wg0.conf} instead, which is the standard location
+    for a \texttt{wg-quick} interface address.
+    Placing it in \texttt{srvauthn.conf} as well would duplicate the value
+    across two files that must be kept in sync without adding any
+    functionality, since \texttt{wg-quick} reads only \texttt{wg0.conf}.
+    The net effect is identical (Section~\ref{sec:wgparams}).
+  \item \textbf{RBA ASN signal:}
+    The ASN signal is fully implemented using a local db-ip ASN database
+    (MMDB format) mounted into the IdP container.
+    Because such databases require a separate download, the engine is
+    designed to degrade gracefully: if no MMDB file is present it disables
+    that single signal and continues on the remaining four.
+    In the provided Docker setup the file is included and the signal is
+    active.
+\end{itemize}
+
+\subsection{Author Contributions}
+\label{sec:authors}
+
+\begin{table}[H]
+\caption{Authors and contribution percentages.}
+\label{tab:authors}
+\centering
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{lll}
+\toprule
+\textbf{NMEC} & \textbf{Name} & \textbf{Contribution} \\
+\midrule
+114220 & Ana Rita Silva  & 25\% \\
+43483  & Carlos Coelho   & 25\% \\
+108545 & Miguel Reis     & 25\% \\
+103234 & Paulo Pinto     & 25\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+

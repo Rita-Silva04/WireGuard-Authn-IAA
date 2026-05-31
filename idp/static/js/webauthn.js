@@ -47,14 +47,14 @@ async function startFido2(sessionId) {
         const data = await res.json();
 
         if (res.ok) {
-            msg.innerHTML = '<div class="ok" style="margin-top:12px">✅ YubiKey verified! Redirecting…</div>';
+            msg.innerHTML = '<div class="ok" style="margin-top:12px">YubiKey verified! Redirecting…</div>';
             setTimeout(()=>{ window.location=`/oauth/mfa/${sessionId}`; }, 800);
         } else {
-            msg.innerHTML = `<div class="err" style="margin-top:12px">❌ ${data.message || data.error || 'Authentication failed.'}</div>`;
+            msg.innerHTML = `<div class="err" style="margin-top:12px">${data.message || data.error || 'Authentication failed.'}</div>`;
             btn.disabled = false;
         }
     } catch(e) {
-        msg.innerHTML = `<div class="err" style="margin-top:12px">❌ ${e.message}</div>`;
+        msg.innerHTML = `<div class="err" style="margin-top:12px">${e.message}</div>`;
         btn.disabled = false;
     }
 }

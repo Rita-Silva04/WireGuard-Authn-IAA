@@ -46,12 +46,12 @@ async function registerKey(username) {
         const data = await res.json();
 
         if (res.ok) {
-            showMsg('✅ Security key registered! Refreshing…', 'ok');
+            showMsg('Security key registered! Refreshing…', 'ok');
             setTimeout(()=>window.location.reload(), 1200);
         } else {
-            showMsg('❌ ' + data.error, 'err');
+            showMsg(data.error, 'err');
         }
     } catch(e) {
-        showMsg('❌ ' + e.message, 'err');
+        showMsg(e.message, 'err');
     }
 }

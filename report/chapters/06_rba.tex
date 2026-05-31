@@ -1,0 +1,58 @@
+% ════════════════════════════════════════════════════════════════════════════════
+\section{Risk-Based Authentication}
+\label{sec:rba}
+
+The RBA engine in \texttt{idp/rba.py:compute\_risk} evaluates five signals
+before each authentication attempt and returns a numeric risk score that
+drives the PAM tier selection (Section~\ref{sec:pam}).
+
+\subsection{Risk Signals}
+\texttt{compute\_risk(username, ip, user\_agent)} aggregates the five
+signals in Table~\ref{tab:rba-signals} into a float in $[0, 1]$, then
+scales it to $[0, 100]$ for the PAM module via \texttt{IAA\_RISK\_SCORE}.
+
+\begin{table}[t]
+\centering
+\caption{RBA risk signals and their weights.}
+\label{tab:rba-signals}
+\renewcommand{\arraystretch}{1.2}
+\scriptsize
+\begin{tabular}{lr}
+\toprule
+\textbf{Signal} & \textbf{Weight} \\
+\midrule
+First-ever login (no prior IP history) & $+0.30$ \\
+New IP address for existing user        & $+0.20$ \\
+New ASN for existing user               & $+0.15$ \\
+Recent failures in last 30 min          & $+0.10 \times n$, max $0.40$ \\
+Unusual hour (00:00--06:00 UTC)         & $+0.20$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+ASN resolution uses a locally mounted db-ip ASN database in MMDB format.
+No external HTTP calls are made during a login attempt.
+For private or loopback addresses (the Docker single-machine demo), the
+ASN lookup is skipped automatically; if the MMDB is missing entirely, only
+the ASN signal is disabled and the other four continue to work.
+
+The resulting score maps directly to the PAM tier:
+scores below 30 require password only (L1);
+30--59 require password and TOTP (L2);
+60 and above require all three factors (L3).
+
+\subsection{Fail-Closed Policy}
+If a user is assigned tier L2 or L3 but has not enrolled the required
+extra factor, \texttt{compute\_risk} returns \texttt{factors=None} and the
+IdP renders a 403 ``contact your helpdesk'' page.
+We deliberately do \emph{not} silently downgrade to a weaker tier:
+a system that accepts password-only authentication for users without a
+TOTP token when the risk engine says they should provide one would offer
+no MFA guarantee under elevated risk.
+
+On successful authentication the client IP and ASN are recorded in
+\texttt{rba\_ip\_history}, so subsequent logins from the same location
+attract a lower score.
+All authentication events (start, per-factor outcome, success/failure) are
+written to \texttt{rba\_events}, both for audit and for the recent-failures
+signal.

@@ -14,8 +14,8 @@ What it does (idempotent — safe to re-run):
   6. Build and start the Docker stack
   7. Enrol a test user (default: alice) with password + TOTP
 
-After this script succeeds, run:
-    python3 scripts/test_e2e.py
+After this script succeeds, run userauthn.py to start a VPN session.
+See the Evaluation section of the report for the full manual demo walkthrough.
 """
 
 import argparse
@@ -94,6 +94,19 @@ def check_prerequisites():
         fail("Docker daemon is not running or current user can't reach it.\n"
              "  Try: sudo systemctl start docker  OR  add yourself to the docker group.")
     ok("Docker daemon reachable")
+
+    # Ensure UDP 51820 is open in UFW (WireGuard needs it).
+    ufw_status = shell("sudo ufw status 2>/dev/null", check=False)
+    if ufw_status.returncode == 0 and "Status: active" in ufw_status.stdout:
+        if "51820" not in ufw_status.stdout:
+            r = shell("sudo ufw allow 51820/udp", check=False)
+            if r.returncode == 0:
+                ok("UFW: opened UDP 51820")
+            else:
+                warn("UFW is active but could not open UDP 51820 automatically.\n"
+                     "  Run manually:  sudo ufw allow 51820/udp")
+        else:
+            ok("UFW: UDP 51820 already allowed")
 
 
 def generate_env(force):
@@ -203,7 +216,12 @@ def prepare_data_dir():
     # Docker bind-mounts this directory as /data. On hosts using user namespace
     # remapping, container-created files can appear as nobody:nogroup; keeping
     # the directory host-owned and writable avoids reset/delete failures.
-    os.chmod(path, 0o777)
+    # If a previous Docker run left root-owned files here the chmod will fail —
+    # that is harmless since Docker itself runs as root and can write regardless.
+    try:
+        os.chmod(path, 0o777)
+    except PermissionError:
+        pass
     ok("data/ ready for Docker bind mount")
 
 
@@ -370,8 +388,7 @@ def main():
     generate_base_conf(pubkey, args.force)
     prepare_data_dir()
     start_stack(args.force)
-    enrol_user(args.username if hasattr(args, "username") else args.user,
-               args.password, args.force)
+    enrol_user(args.user, args.password, args.force)
 
     print("\n" + "═"*60)
     print("  Setup complete!")
@@ -385,8 +402,7 @@ def main():
 
   Test user:  {args.user}  /  {args.password}
 
-  Next step — run the full end-to-end test:
-    python3 scripts/test_e2e.py
+  Next step — bring up the client container and run userauthn.py (see report §VIII).
 """)
 
 

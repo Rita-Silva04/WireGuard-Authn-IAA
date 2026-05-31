@@ -3,8 +3,9 @@
 {% block head %}
 <script src="/static/js/webauthn.js" defer></script>
 {% endblock %}
+{% block nav %}<nav><a href="/">← Users</a></nav>{% endblock %}
 {% block content %}
-<h1>👤 {{ user.display_name }}</h1>
+<h1>{{ user.display_name }}</h1>
 <p class="sub">{{ user.username }} · created {{ user.created_at[:10] }}</p>
 
 {% if error %}<div class="err">{{ error }}</div>{% endif %}
@@ -44,8 +45,8 @@
     <img src="/user/{{ user.username }}/totp/qr" style="width:160px;border-radius:8px"
          alt="TOTP QR Code">
     <div>
-      <p style="font-size:.85rem;color:#888">Scan with Google Authenticator, Authy, etc.</p>
-      <p style="font-size:.8rem;color:#555;margin-top:8px">Secret: <code style="color:#aaa">{{ totp.secret }}</code></p>
+      <p style="font-size:.85rem;color:#666">Scan with Google Authenticator, Authy, etc.</p>
+      <p style="font-size:.8rem;color:#777;margin-top:8px">Secret: <code style="color:#444">{{ totp.secret }}</code></p>
       {% if not totp.confirmed %}
       <form method="POST" action="/user/{{ user.username }}/totp/confirm" style="margin-top:12px">
         <label>Enter code to confirm</label>
@@ -74,7 +75,7 @@
     {% for c in fido2_creds %}
     <tr>
       <td>{{ c.name }}</td>
-      <td style="color:#555;font-size:.82rem">{{ c.created_at[:10] }}</td>
+      <td style="color:#777;font-size:.82rem">{{ c.created_at[:10] }}</td>
       <td>
         <form method="POST" action="/user/{{ user.username }}/fido2/{{ c.cred_id }}/delete">
           <button class="btn btn-danger btn-sm" type="submit"

@@ -288,7 +288,7 @@ def main():
         if ok:
             print(f"""
 ╔══════════════════════════════════════════════════╗
-║              ✅  VPN Connected!                  ║
+║                 VPN Connected!                   ║
 ║                                                   ║
 ║  User:      {username:<36} ║
 ║  Interface: {args.interface:<36} ║
@@ -296,7 +296,7 @@ def main():
 ╚══════════════════════════════════════════════════╝
 """)
         else:
-            print("\n❌ WireGuard interface failed to come up. Check logs above.\n")
+            print("\nERROR: WireGuard interface failed to come up. Check logs above.\n")
             sys.exit(1)
 
     finally:
