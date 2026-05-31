@@ -20,10 +20,20 @@ handshake (Noise Protocol Framework~\cite{perrin2018noise}, revision~34) over
 ChaCha20-Poly1305~\cite{rfc8439}, BLAKE2s~\cite{blake2}.
 No third-party Noise library was used.
 
+The ``IK'' in the name means the \emph{I}nitiator already \emph{K}nows the
+responder's static \emph{K}ey before the handshake begins, which is
+precisely our situation, since the client already holds the gateway's
+WireGuard public key from \texttt{base.conf}. The pattern therefore maps
+directly onto our trust model with no extra key distribution.
+
 The IK pattern is a two-message handshake: in message~1 the initiator sends
 its ephemeral and (encrypted) static public keys plus an encrypted payload;
 in message~2 the responder replies with its ephemeral and an encrypted
-payload, completing the four DH operations $es$, $ss$, $ee$, $se$.
+payload, completing the four Diffie-Hellman operations $es$, $ss$, $ee$,
+$se$. Each operation mixes one pair of keys (ephemeral or static, initiator
+or responder) into the running shared secret, so that by the end both the
+fresh session and the long-term identities of \emph{both} parties are
+authenticated.
 After the handshake, both sides hold a pair of ChaCha20-Poly1305
 \texttt{CipherState} objects (one per direction), and frames are exchanged
 with a 4-byte big-endian length prefix (\texttt{common/framing.py}).

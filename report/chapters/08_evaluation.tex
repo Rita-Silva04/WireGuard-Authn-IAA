@@ -22,7 +22,7 @@ sudo apt install docker.io docker-compose-v2 wireguard-tools
 sudo usermod -aG docker $USER && newgrp docker
 sudo modprobe wireguard   # verify kernel module is available
 \end{lstlisting}
-No Python dependencies are required on the host — every Python process runs
+No Python dependencies are required on the host; every Python process runs
 inside a container.
 
 \textbf{Setup.}
@@ -114,7 +114,7 @@ The browser opens the OAuth device page with the code pre-filled
 \begin{figure}[H]
   \centering
   \includegraphics[width=0.8\columnwidth]{images/browser-device}
-  \caption{OAuth device page --- code pre-filled via redirect URI.}
+  \caption{OAuth device page: code pre-filled via redirect URI.}
   \label{fig:browser-device}
 \end{figure}
 
@@ -122,8 +122,8 @@ The user completes the password factor (Fig.~\ref{fig:mfa-password})
 and the TOTP factor (Fig.~\ref{fig:mfa-totp}).
 On success the browser shows the completion page
 (Fig.~\ref{fig:auth-complete}).
-This page and the terminal banner below are identical for every tier ---
-only the factor sequence leading up to them differs --- so we show them
+This page and the terminal banner below are identical for every tier
+(only the factor sequence leading up to them differs), so we show them
 once here and refer back to them in the L1 and L3 scenarios.
 
 \begin{figure}[H]
@@ -151,7 +151,7 @@ interface is up (Fig.~\ref{fig:vpn-connected}).
 After the L2 login above, \texttt{alice}'s IP is recorded in
 \texttt{rba\_ip\_history}.
 A second login from the same machine during normal hours with no recent
-failures scores 0.00 — no signal fires — placing \texttt{alice} at tier
+failures scores 0.00 (no signal fires), placing \texttt{alice} at tier
 L1: password only.
 To reproduce: immediately after the L2 session, run
 \texttt{python3 scripts/teardown.py --session} to clear the WireGuard peer

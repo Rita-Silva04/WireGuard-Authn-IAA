@@ -96,8 +96,8 @@ parameters dynamically after MFA+RBA authentication through an
 OAuth~2.0 IdP orchestrated by a custom C PAM module.
 The auth channel is a hand-implemented Noise-IK tunnel keyed on the
 gateway's existing WireGuard public key, so no additional PKI is needed.
-The system supports three factors --- password challenge-response, TOTP,
-and FIDO2 with user verification required --- selected at runtime by a
+The system supports three factors (password challenge-response, TOTP,
+and FIDO2 with user verification required), selected at runtime by a
 five-signal risk engine, and ships with five additional hardening measures.
 \end{abstract}
 

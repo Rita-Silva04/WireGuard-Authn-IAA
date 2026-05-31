@@ -51,6 +51,13 @@ The server compares against \texttt{HMAC-SHA256(v, nonce)} with
 \texttt{hmac.compare\_digest}.
 The nonce is burned atomically (\texttt{BEGIN IMMEDIATE}) before the
 comparison, so a replay finds the nonce already consumed.
+
+The practical effect is twofold. Because only the proof crosses the
+network, an eavesdropper (or the IdP itself) never sees the password and
+cannot reuse a captured proof, since each nonce is single-use. And because
+the database stores only the scrypt verifier $v$, a database leak yields
+neither the password nor a value that authenticates on its own: an
+attacker would still have to brute-force the scrypt hash.
 Fig.~\ref{fig:mfa-password} shows the browser form during this step.
 
 \begin{figure}[H]
