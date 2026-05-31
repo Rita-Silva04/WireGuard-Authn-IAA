@@ -136,7 +136,7 @@ Tables~\ref{tab:wgparams-client} and~\ref{tab:wgparams-server} show which compon
 \textbf{Parameter} & \textbf{How produced} \\
 \midrule
 1.\ Server secret key        & \texttt{/etc/wireguard/privatekey-server} (generated once at setup) \\
-2.\ Server tunnel IP         & \texttt{wg0.conf} \texttt{Address = 10.10.10.1/24} (written by \texttt{scripts/setup.py}) \\
+2.\ Server tunnel IP         & \texttt{wg0.conf} \texttt{Address = 10.10.10.1/24} (written by \texttt{scripts/init-wg.sh}) \\
 3.\ Server UDP port          & \texttt{srvauthn.conf} (\texttt{wg\_listen\_port}, default 51820) \\
 4.\ Client public key        & \texttt{wg pubkey} on the server, then \texttt{wg set} \\
 5.\ Client allowed IP        & Same lease as client param~2 \\
@@ -155,7 +155,8 @@ required prior knowledge.
 One deliberate choice concerns the server tunnel IP (server parameter~2):
 rather than an explicit field in \texttt{srvauthn.conf}, the server's
 address (\texttt{10.10.10.1/24}) is written directly into
-\texttt{wg0.conf} by \texttt{scripts/setup.py}, following standard
+\texttt{wg0.conf} by \texttt{scripts/init-wg.sh} (the one-time key/config
+bootstrap invoked by \texttt{scripts/setup.py}), following standard
 \texttt{wg-quick} convention.
 \texttt{srvauthn.conf} carries \texttt{internal\_subnet = 10.10.10.0/24},
 which \texttt{SrvAuthn} uses only for client IP lease allocation (starting

@@ -121,23 +121,28 @@ The browser opens the OAuth device page with the code pre-filled
 The user completes the password factor (Fig.~\ref{fig:mfa-password})
 and the TOTP factor (Fig.~\ref{fig:mfa-totp}).
 On success the browser shows the completion page
-(Fig.~\ref{fig:auth-complete-l2}).
+(Fig.~\ref{fig:auth-complete}).
+This page and the terminal banner below are identical for every tier ---
+only the factor sequence leading up to them differs --- so we show them
+once here and refer back to them in the L1 and L3 scenarios.
 
 \begin{figure}[H]
   \centering
   \includegraphics[width=0.9\columnwidth]{images/auth-complete-l2}
-  \caption{Authentication complete after password and TOTP.}
-  \label{fig:auth-complete-l2}
+  \caption{Browser ``Authentication Complete'' page shown on a successful
+  login (identical across all tiers).}
+  \label{fig:auth-complete}
 \end{figure}
 
 The terminal then shows the leased tunnel IP, confirming the WireGuard
-interface is up (Fig.~\ref{fig:vpn-connected-l2}).
+interface is up (Fig.~\ref{fig:vpn-connected}).
 
 \begin{figure}[H]
   \centering
   \includegraphics[width=0.9\columnwidth]{images/vpn-connected-l2}
-  \caption{Client terminal after a successful L2 login.}
-  \label{fig:vpn-connected-l2}
+  \caption{Client terminal ``VPN Connected'' banner with the leased tunnel
+  IP (identical across all tiers).}
+  \label{fig:vpn-connected}
 \end{figure}
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -162,14 +167,9 @@ the TOTP step does not appear.
   \label{fig:mfa-l1-password}
 \end{figure}
 
-The tunnel comes up on completion (Fig.~\ref{fig:auth-complete-l1}).
-
-\begin{figure}[H]
-  \centering
-  \includegraphics[width=0.9\columnwidth]{images/auth-complete-l1}
-  \caption{Authentication complete after password only (L1).}
-  \label{fig:auth-complete-l1}
-\end{figure}
+After the single factor succeeds, the browser shows the same completion
+page (Fig.~\ref{fig:auth-complete}) and the tunnel comes up with the same
+``VPN Connected'' banner (Fig.~\ref{fig:vpn-connected}) as in the L2 case.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \subsection{L3 Authentication: Password, TOTP, and FIDO2}
@@ -195,23 +195,10 @@ dialog (Fig.~\ref{fig:mfa-fido2-login}).
   \label{fig:mfa-fido2-login}
 \end{figure}
 
-On success the completion page appears (Fig.~\ref{fig:auth-complete-l3}).
-
-\begin{figure}[H]
-  \centering
-  \includegraphics[width=0.9\columnwidth]{images/auth-complete-l3}
-  \caption{Authentication complete after all three L3 factors.}
-  \label{fig:auth-complete-l3}
-\end{figure}
-
-The terminal confirms the tunnel is up (Fig.~\ref{fig:vpn-connected-l3}).
-
-\begin{figure}[H]
-  \centering
-  \includegraphics[width=0.9\columnwidth]{images/vpn-connected-l3}
-  \caption{Client terminal after a successful L3 login.}
-  \label{fig:vpn-connected-l3}
-\end{figure}
+Once all three factors pass, the browser shows the same completion page
+(Fig.~\ref{fig:auth-complete}) and the terminal prints the same
+``VPN Connected'' banner (Fig.~\ref{fig:vpn-connected}) as in the previous
+scenarios.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \subsection{Server-Side Verification}

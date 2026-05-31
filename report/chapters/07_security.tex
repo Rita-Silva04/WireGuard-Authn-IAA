@@ -11,10 +11,13 @@ OAuth access tokens are 48-byte values produced by
 Only their SHA-256 hash is stored; the plaintext appears only in the
 \texttt{POST /oauth/token} response.
 Tokens have a 60-second TTL and are single-use:
-\texttt{GET /oauth/userinfo} flips \texttt{used\_at} atomically inside a
-\texttt{BEGIN IMMEDIATE} transaction before any other work, so a
-concurrent or replayed call sees \texttt{used\_at $\neq$ NULL} and
-returns 401. A database leak therefore exposes zero usable tokens.
+\texttt{GET /oauth/userinfo} redeems the token with a conditional
+single-statement update
+(\texttt{UPDATE oauth\_tokens SET used\_at=now WHERE token\_hash=? AND
+used\_at IS NULL}) and accepts the call only when it changed exactly one
+row.
+A concurrent or replayed call updates zero rows and returns 401, so a
+database leak exposes zero usable tokens.
 
 \subsection{Account Lockout (B2)}
 Five failed factor verifications within a 5-minute window lock the account

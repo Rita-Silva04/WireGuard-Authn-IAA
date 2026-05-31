@@ -20,10 +20,13 @@ gcc -Wall -Wextra -fPIC -shared -O2 \
 \end{lstlisting}
 
 It is installed in the system PAM module directory.
-The service profile \texttt{/etc/pam.d/iaa-vpn} has a single line:
+The service profile \texttt{/etc/pam.d/iaa-vpn} wires our module into the
+\texttt{auth} stack, with \texttt{pam\_permit} satisfying the unused
+\texttt{account} phase:
 
 \begin{lstlisting}[language=bash, basicstyle=\ttfamily\scriptsize]
-auth required pam_vpnmfa.so
+auth    required pam_vpnmfa.so
+account required pam_permit.so
 \end{lstlisting}
 
 When the IdP calls \texttt{pam\_authenticate("iaa-vpn",~user)}, the module:
